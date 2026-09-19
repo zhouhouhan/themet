@@ -1,0 +1,20 @@
+{
+  "name": "walkapp",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@mkkellogg/gaussian-splats-3d": "^0.4.7",
+    "esbuild": "^0.28.2",
+    "three": "^0.184.0",
+    "three-mesh-bvh": "^0.8.0",
+    "three-player-controller": "^0.6.2"
+  }
+}

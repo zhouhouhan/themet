@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VGALLERY · 拖拽视角自检</title>
+<link rel="icon" href="data:,">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#f6f6f4;color:#1b1b1d;font:13px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:18px 20px 40px}
+  h1{font-size:15px;letter-spacing:.14em;font-weight:600;margin-bottom:2px}
+  .sub{color:#6b6b70;font-size:12px;margin-bottom:14px}
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  button{border:1px solid #c9c7c0;background:#fff;color:#1b1b1d;border-radius:6px;padding:7px 14px;font-size:12px;cursor:pointer}
+  button:hover{background:#efeee9}
+  button:disabled{opacity:.45;cursor:default}
+  .primary{background:#153256;border-color:#153256;color:#fff}
+  .primary:hover{background:#1d4270}
+  #status{font-size:12px;color:#6b6b70}
+  .frame{width:100%;height:46vh;min-height:280px;border:1px solid #d8d6cf;border-radius:8px;background:#0a0a0c;display:block}
+  .stage{position:relative}
+  #veil{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(10,10,12,.5);color:#fff;font-size:12px;letter-spacing:.1em;border-radius:8px;z-index:5}
+  #veil.on{display:flex}
+  .hint{font-size:11.5px;color:#6b6b70;margin:8px 0 16px}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e0d9;border-radius:8px;overflow:hidden}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #efeee9;vertical-align:top}
+  th{background:#f0efe9;font-weight:600;font-size:11.5px;letter-spacing:.06em;color:#4a4a4f}
+  tr:last-child td{border-bottom:0}
+  td.k{width:26px;font-weight:700}
+  td.n{width:32%;font-size:12.5px}
+  td.v{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:#4a4a4f;white-space:pre-wrap;word-break:break-all}
+  .pass{color:#1a7f37}.fail{color:#b3261e}.warn{color:#8a6100}
+  .pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:10.5px;font-weight:700;letter-spacing:.05em}
+  .pill.pass{background:#e6f4ea;color:#1a7f37}
+  .pill.fail{background:#fce8e6;color:#b3261e}
+  .pill.warn{background:#fdf3d7;color:#8a6100}
+  #verdict{margin-top:16px;padding:12px 14px;border-radius:8px;font-size:13px;font-weight:600;display:none}
+  #verdict.ok{display:block;background:#e6f4ea;color:#14601f;border:1px solid #b7e0c3}
+  #verdict.bad{display:block;background:#fce8e6;color:#8c1d18;border:1px solid #f2b8b5}
+  #report{display:none;margin-top:12px;width:100%;height:120px;font-family:ui-monospace,Consolas,monospace;font-size:11px;border:1px solid #e2e0d9;border-radius:8px;padding:10px;background:#fff;color:#4a4a4f}
+</style>
+</head>
+<body>
+<h1>拖拽视角自检 · VGALLERY</h1>
+<div class="sub">在真实浏览器里驱动 <code>walktest.html</code>，直接读相机数据判断"按住左键拖动才转视角"是否真的生效。</div>
+
+<div class="bar">
+  <button id="run" class="primary">开始自检</button>
+  <button id="again" disabled>再测一次</button>
+  <button id="copy" disabled>复制报告</button>
+  <span id="status">等待中…</span>
+</div>
+
+<div class="stage">
+  <iframe id="app" class="frame" src="walktest.html" title="walktest"></iframe>
+  <div id="veil">自检进行中 · 输入已锁定，请勿手动操作</div>
+</div>
+<div class="hint">上面是真实运行的应用。<b>自检期间不要在里面手动拖动</b>（会被算作异常输入，上次第 4 项就是因此误报），自检自己发合成事件测量。加载 1MB+ 场景需要几秒。</div>
+
+<table id="tbl">
+  <thead><tr><th class="k">#</th><th>检测项</th><th>实测值 / 判定依据</th><th>结果</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<div id="verdict"></div>
+<textarea id="report" readonly></textarea>
+
+<script>
+(function () {
+  var frame = document.getElementById('app');
+  var tbody = document.querySelector('#tbl tbody');
+  var statusEl = document.getElementById('status');
+  var verdict = document.getElementById('verdict');
+  var reportEl = document.getElementById('report');
+  var veil = document.getElementById('veil');
+  var btnRun = document.getElementById('run');
+  var btnAgain = document.getElementById('again');
+  var btnCopy = document.getElementById('copy');
+
+  var rows = [], reportLines = [];
+
+  function add(name, detail, state, cls) {
+    var tr = document.createElement('tr');
+    var pill = state === 'pass' ? 'PASS' : state === 'fail' ? 'FAIL' : state === 'warn' ? 'WARN' : '…';
+    tr.innerHTML = '<td class="k">' + (rows.length + 1) + '</td>' +
+      '<td class="n">' + name + '</td>' +
+      '<td class="v">' + String(detail).replace(/</g, '&lt;') + '</td>' +
+      '<td><span class="pill ' + (state || 'warn') + '">' + pill + '</span></td>';
+    tbody.appendChild(tr);
+    rows.push({ name: name, detail: String(detail), state: state });
+    reportLines.push('[' + pill + '] ' + name + ' :: ' + detail);
+    return tr;
+  }
+
+  function clear() { tbody.innerHTML = ''; rows = []; reportLines = []; verdict.className = ''; verdict.textContent = ''; }
+
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+
+  function waitFor(fn, timeout) {
+    var t0 = Date.now();
+    return new Promise(function (resolve) {
+      (function tick() {
+        var v;
+        try { v = fn(); } catch (e) { v = null; }
+        if (v) return resolve(v);
+        if (Date.now() - t0 > timeout) return resolve(null);
+        setTimeout(tick, 200);
+      })();
+    });
+  }
+
+  function angleDiff(a, b) {                       // 归一化到 (-PI, PI]
+    var d = a - b;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d <= -Math.PI) d += 2 * Math.PI;
+    return d;
+  }
+
+  function run() {
+    clear();
+    veil.classList.add('on');                 // 锁住画面，避免手动操作污染测量
+    btnRun.disabled = true; btnAgain.disabled = true; btnCopy.disabled = true;
+    verdict.className = '';
+
+    var w = frame.contentWindow;
+    var cv = null, cam = null;
+    var yaw = function () {
+      var p = w.__vg.ctrl.getPosition();
+      return Math.atan2(cam.position.x - p.x, cam.position.z - p.z);
+    };
+    var snap = function () { return cam.position.x + ',' + cam.position.y + ',' + cam.position.z; };
+    var pos = function () { return { x: cam.position.x, y: cam.position.y, z: cam.position.z }; };
+    var dist = function (a, b) { return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z); };
+    var quat = function () {
+      var q = cam.quaternion; return { x: q.x, y: q.y, z: q.z, w: q.w };
+    };
+    var quatAngle = function (a, b) {              // 两个四元数之间的夹角（弧度）
+      var d = Math.abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w);
+      return 2 * Math.acos(Math.min(1, d));
+    };
+    var deg = function (r) { return (r * 180 / Math.PI).toFixed(2); };
+    var dragBy = function (dx) {                    // 按住左键拖 dx 像素，返回实际转角（度）
+      var a = yaw(), x0 = 400, y0 = 300, steps = 4;
+      fire('mousedown', x0, y0, 1);
+      for (var i = 1; i <= steps; i++) {
+        fire('mousemove', x0 + Math.round(dx * i / steps), y0, 1);
+      }
+      fire('mouseup', x0 + dx, y0, 0);
+      return sleep(320).then(function () { return angleDiff(yaw(), a) * 180 / Math.PI; });
+    };
+
+    function fire(type, x, y, buttons) {
+      cv.dispatchEvent(new w.MouseEvent(type, {
+        bubbles: true, cancelable: true, view: w,
+        clientX: x, clientY: y, button: 0, buttons: buttons
+      }));
+    }
+
+    statusEl.textContent = '等待场景加载（最多 60s）…';
+
+    waitFor(function () {
+      return w.__vg && w.__vg.ctrl && w.__vg.ctrl.camera && w.document.querySelector('canvas');
+    }, 60000).then(function (ok) {
+      if (!ok) {
+        add('场景加载', '60 秒内没等到 window.__vg（补丁未生效或资源加载失败）', 'fail');
+        finish(false);
+        return;
+      }
+      cam = w.__vg.ctrl.camera;
+      cv = w.document.querySelector('canvas');
+      add('调试句柄 window.__vg 就绪', 'camera / ctrl / input 均可访问', 'pass');
+
+      statusEl.textContent = '等待画面稳定…';
+      return sleep(1800).then(function () {
+        // ---- 1. 指针锁定必须彻底关闭 --------------------------------
+        add('未处于 pointer lock（鼠标不再被锁）',
+            'pointerLockElement = ' + String(w.document.pointerLockElement),
+            w.document.pointerLockElement === null ? 'pass' : 'fail');
+
+        // ---- 2. 移动端触摸层应当不存在 ------------------------------
+        var mc = w.__vg.ctrl.mobileControls;
+        add('桌面端未创建移动端触摸层/摇杆',
+            'ctrl.mobileControls = ' + (mc ? '已创建(会遮挡右半屏)' : 'null'),
+            mc ? 'fail' : 'pass');
+
+        // ---- 3. 不按键移动鼠标：视角必须纹丝不动 --------------------
+        // 量化判定，不用 != 比较：相机位置是浮点 lerp，任何尾差都会被
+        // 字符串比对当成"漂移"。这里给出真实数值，超过阈值才算异常。
+        // 先等跟随相机收敛（每帧 lerp；慢机器/软渲染下加载完还要晃几秒）：
+        // 500ms 内位移 < 1e-4 视为就位，最多等 10s，避免把收敛期误判成漂移。
+        return (function settle() {
+          settle.n = (settle.n || 0) + 1;
+          var a = pos();
+          return sleep(500).then(function () {
+            if (dist(pos(), a) > 1e-4 && settle.n < 20) return settle();
+          });
+        })().then(function () {
+          var before = pos(), q0 = quat(), yaw0 = yaw();
+          fire('mousemove', 300, 300, 0);
+          fire('mousemove', 1200, 620, 0);
+          fire('mousemove', 200, 120, 0);
+          return sleep(400).then(function () {
+          var dp = dist(pos(), before);
+          var dRot = quatAngle(quat(), q0) * 180 / Math.PI;
+          var dOrb = Math.abs(angleDiff(yaw(), yaw0)) * 180 / Math.PI;
+          var bad = dp > 1e-4 || dRot > 0.01 || dOrb > 0.01;
+          add('鼠标移动（不按左键）不转视角',
+              'dragging=' + w.__vg.input.drag +
+              ' | 相机位移=' + dp.toExponential(2) + ' 单位' +
+              ' | 朝向变化=' + dRot.toFixed(4) + '°' +
+              ' | 轨道角变化=' + dOrb.toFixed(4) + '°',
+              (w.__vg.input.drag === false && !bad) ? 'pass' : 'fail');
+
+          // ---- 4. 按住左键拖动：必须转视角 --------------------------
+          var yawA = yaw(), x0 = 400;
+          fire('mousedown', x0, 300, 1);
+          var dragging = w.__vg.input.drag === true;
+          var total = 0;
+          for (var i = 1; i <= 6; i++) { var nx = x0 + i * 80; total += 80; fire('mousemove', nx, 300, 1); }
+          fire('mouseup', x0 + total, 300, 0);
+          return sleep(320).then(function () {
+            var yawB = yaw();
+            var d = angleDiff(yawB, yawA);
+            var sens = w.__vg.cam.sensitivity;
+            var scale = w.__vgLookScale || 2.5e-4;
+            var expect = -total * scale * sens;
+
+            add('按下左键进入拖拽状态',
+                'input.drag = ' + dragging + '（拖动 ' + total + 'px）',
+                dragging ? 'pass' : 'fail');
+            add('拖拽确实改变了视角朝向',
+                'Δyaw = ' + (d * 180 / Math.PI).toFixed(2) + '°（0 表示没转）',
+                Math.abs(d) > 0.05 ? 'pass' : 'fail');
+
+            var ratio = expect ? Math.abs(d / expect) : 0;
+            add('旋转量与灵敏度设定吻合',
+                '实测 ' + (d * 180 / Math.PI).toFixed(1) + '° / 预期 ' + (expect * 180 / Math.PI).toFixed(1) +
+                '° | 比值 ' + ratio.toFixed(2) + '（灵敏度 ' + sens + '，系数 ' + scale + '）',
+                (ratio > 0.7 && ratio < 1.35) ? 'pass' : 'warn');
+
+            // ---- 5. 松手后必须完全停住 --------------------------------
+            var after = snap(), yawC = yaw();
+            fire('mousemove', 1800, 900, 0);
+            fire('mousemove', 120, 200, 0);
+            return sleep(300).then(function () {
+              var d2 = angleDiff(yaw(), yawC);
+              add('松手后移动鼠标不再转视角',
+                  'Δyaw = ' + (d2 * 180 / Math.PI).toFixed(3) + '° | 相机位移=' + (snap() !== after ? '有变化' : '0'),
+                  Math.abs(d2) < 0.5 * Math.PI / 180 ? 'pass' : 'fail');
+
+              // ---- 6. 右半屏也要能拖（触摸层已移除） -----------------
+              var yawD = yaw();
+              var xr = Math.round(w.innerWidth * 0.82);
+              fire('mousedown', xr, 320, 1);
+              fire('mousemove', xr + 160, 320, 1);
+              fire('mouseup', xr + 160, 320, 0);
+              return sleep(300).then(function () {
+                var d3 = angleDiff(yaw(), yawD);
+                add('屏幕右侧拖拽同样生效',
+                    'x≈' + xr + ' 处 Δyaw = ' + (d3 * 180 / Math.PI).toFixed(2) + '°',
+                    Math.abs(d3) > 0.05 ? 'pass' : 'fail');
+
+                // ---- 7. 灵敏度运行时调节：真的改得动吗 -----------------
+                // 旧版这里只是把变量打印出来、硬编码判 WARN —— 那等于没测。
+                // 现在实测：把 __vgLookScale 改成 2 倍，同样拖 300px，
+                // 转角必须跟着翻倍；测完把变量恢复原状。
+                var had = Object.prototype.hasOwnProperty.call(w, '__vgLookScale');
+                var prev = w.__vgLookScale;
+                return dragBy(300).then(function (degA) {
+                  w.__vgLookScale = 5e-4;
+                  return sleep(150).then(function () {
+                    return dragBy(300).then(function (degB) {
+                      try {
+                        if (had) { w.__vgLookScale = prev; } else { delete w.__vgLookScale; }
+                      } catch (e) { w.__vgLookScale = undefined; }
+                      var ratio = degA ? Math.abs(degB / degA) : 0;
+                      add('灵敏度可运行时调节（实测生效）',
+                          '默认 300px → ' + degA.toFixed(2) + '°；设 __vgLookScale=5e-4 → ' +
+                          degB.toFixed(2) + '°；比值 ' + ratio.toFixed(2) +
+                          '（预期 2.00）｜已还原为 ' + String(w.__vgLookScale),
+                          (ratio > 1.7 && ratio < 2.3) ? 'pass' : 'fail');
+                      finish(true);
+                    });
+                  });
+                });
+              });
+            });
+          });
+        });
+        });
+      });
+    }).catch(function (e) {
+      add('执行异常', String(e && e.message || e), 'fail');
+      finish(false);
+    });
+  }
+
+  function finish(loaded) {
+    var fails = rows.filter(function (r) { return r.state === 'fail'; }).length;
+    var warns = rows.filter(function (r) { return r.state === 'warn'; }).length;
+    if (!loaded) {
+      verdict.className = 'bad';
+      verdict.textContent = '无法完成自检 —— 请看上面第 1 行。';
+    } else if (fails === 0) {
+      verdict.className = 'ok';
+      verdict.textContent = '全部关键项通过 ✅ 拖拽视角已生效' + (warns ? '（' + warns + ' 项为提示信息）' : '');
+    } else {
+      verdict.className = 'bad';
+      verdict.textContent = '有 ' + fails + ' 项失败 ❌ —— 把下方报告发给 AI';
+    }
+    statusEl.textContent = '完成：' + rows.filter(function (r) { return r.state === 'pass'; }).length +
+      ' pass / ' + fails + ' fail / ' + warns + ' warn';
+    veil.classList.remove('on');
+    btnAgain.disabled = false;
+    btnCopy.disabled = rows.length === 0;
+    reportEl.value = 'VGALLERY 拖拽自检报告\n' + new Date().toString() +
+      '\nUA: ' + navigator.userAgent + '\n' + reportLines.join('\n') + '\n\n' + verdict.textContent;
+  }
+
+  btnRun.addEventListener('click', run);
+  btnAgain.addEventListener('click', run);
+  btnCopy.addEventListener('click', function () {
+    reportEl.style.display = 'block';
+    reportEl.select();
+    try { document.execCommand('copy'); statusEl.textContent = '报告已复制到剪贴板'; } catch (e) {}
+  });
+
+  setTimeout(run, 600);
+})();
+</script>
+</body>
+</html>

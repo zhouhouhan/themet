@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Met · A Museum Without Walls</title>
+<link rel="icon" href="data:,">
+<style>
+  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; background:#070605; overflow:hidden; font-family:Georgia,'Times New Roman',serif; }
+
+  /* ── 舞台：底图按原始比例居中适配；热区用百分比/SVG视图坐标随动，永不脱位 ── */
+  .slide { position:absolute; inset:0; opacity:0; pointer-events:none; transition:opacity .7s ease; }
+  .slide.active { opacity:1; pointer-events:auto; }
+  .stage { position:absolute; inset:0; margin:auto; }
+  #cover .stage { aspect-ratio:1372/1005; max-width:100vw; max-height:100vh; }
+  #wings .stage { aspect-ratio:1345/970;  max-width:100vw; max-height:100vh; }
+  .slide .bg { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+
+  /* ── 封面：金色 Enter 圆环，呼吸辉光；底图连同热区一起缓慢 Ken Burns ── */
+  .kenburns { position:absolute; inset:0; animation:kb 38s ease-in-out infinite alternate; }
+  @keyframes kb { from { transform:scale(1); } to { transform:scale(1.05) translate(-0.4%, 0.3%); } }
+  #btn-enter { position:absolute; left:43.51%; top:65.77%; width:12.83%; height:17.51%;
+    border-radius:50%; border:2px solid rgba(242,208,142,.85); cursor:pointer;
+    background:radial-gradient(circle at 50% 42%, rgba(70,52,28,.30), rgba(20,14,8,.18) 70%);
+    box-shadow:0 0 16px rgba(224,184,112,.35), inset 0 0 22px rgba(224,184,112,.14);
+    animation:ringbreathe 3s ease-in-out infinite;
+    transition:filter .3s, transform .3s; }
+  #btn-enter:hover { filter:brightness(1.28); transform:scale(1.045); }
+  #btn-enter:active { transform:scale(.98); }
+  @keyframes ringbreathe {
+    0%,100% { box-shadow:0 0 14px rgba(224,184,112,.30), inset 0 0 20px rgba(224,184,112,.12); }
+    50%     { box-shadow:0 0 38px rgba(236,196,122,.75), inset 0 0 36px rgba(236,196,122,.26); }
+  }
+  .hint { position:absolute; color:rgba(246,239,226,.66); font-size:12px; letter-spacing:.2em;
+    text-shadow:0 1px 4px #000; pointer-events:none; }
+
+  /* ── Museum Map：SVG 热区（viewBox = 底图像素坐标，点击范围像素级精确） ── */
+  #mapsvg { position:absolute; inset:0; width:100%; height:100%; }
+  #hot-piazza { fill:rgba(236,204,142,.14); stroke:rgba(244,212,148,.8); stroke-width:2;
+    stroke-linejoin:round; cursor:pointer;
+    animation:piazzabreathe 2.8s ease-in-out infinite;
+    transition:fill .35s; }
+  #hot-piazza:hover { fill:rgba(246,218,158,.38); animation:none;
+    filter:drop-shadow(0 0 14px rgba(240,210,146,.6)); }
+  @keyframes piazzabreathe {
+    0%,100% { fill:rgba(236,204,142,.10); stroke-opacity:.55;
+      filter:drop-shadow(0 0 0 rgba(240,210,146,0)); }
+    50%     { fill:rgba(240,212,150,.32); stroke-opacity:1;
+      filter:drop-shadow(0 0 12px rgba(240,210,146,.65)); }
+  }
+  .ghost { fill:transparent; stroke:rgba(242,208,142,0); stroke-width:1.5; cursor:pointer;
+    transition:fill .3s, stroke .3s; }
+  .ghost:hover { fill:rgba(246,239,226,.10); stroke:rgba(242,208,142,.9); }
+  .ghost:active { fill:rgba(246,239,226,.18); }
+
+  /* ── 通用 ── */
+  #toast { position:absolute; left:50%; bottom:7%; transform:translateX(-50%); z-index:30;
+    display:none; background:rgba(18,15,12,.88); border:1px solid rgba(224,184,112,.45);
+    color:#ecd9ac; padding:12px 26px; border-radius:999px; font-size:14px; letter-spacing:.12em;
+    backdrop-filter:blur(6px); }
+  #fade { position:fixed; inset:0; background:#070605; opacity:0; pointer-events:none; transition:opacity .65s ease; z-index:99;
+    display:flex; align-items:center; justify-content:center; color:#c9b47e; font-size:14px; letter-spacing:.3em; }
+  #fade.on { opacity:1; pointer-events:auto; }
+  [role=button]:focus-visible { outline:3px solid #ead496; outline-offset:4px; }
+  @media(prefers-reduced-motion:reduce){ *{animation:none!important;transition:none!important;} }
+  @media(max-width:700px){
+    #btn-enter { position:fixed; left:20%; top:auto; bottom:8vh; width:60%; height:48px; border-radius:999px; }
+    #btn-enter::before { content:'Enter the Museum'; display:grid; place-items:center; height:100%; color:#f2e6c8; letter-spacing:.08em; }
+    .hint { display:none; }
+    #toast { font-size:12px; padding:9px 18px; }
+  }
+</style>
+</head>
+<body>
+<div style="position:fixed;left:12px;bottom:5px;z-index:5;color:#b7a98e;font:10px system-ui;pointer-events:none">VGALLERY · Unofficial virtual exhibition</div>
+
+  <!-- ── 第一屏：封面 ── -->
+  <div class="slide active" id="cover">
+    <div class="stage">
+      <div class="kenburns">
+        <img class="bg" src="assets/ui/cover-v2.png" alt="The Met — A Museum Without Walls">
+        <div id="btn-enter" role="button" tabindex="0" aria-label="Enter the museum"></div>
+      </div>
+      <div class="hint" style="left:24px; bottom:20px;">CLICK ENTER · BEGIN THE VISIT</div>
+      <div class="hint" style="right:24px; bottom:20px; color:rgba(238,214,160,.85);">PRESENTED TO&nbsp; HANSON ZHOU</div>
+    </div>
+  </div>
+
+  <!-- ── 第二屏：Museum Map ── -->
+  <div class="slide" id="wings">
+    <div class="stage">
+      <img class="bg" src="assets/ui/map-v2.png" alt="Museum Map">
+      <!-- viewBox = 底图原始像素坐标：热区与画面元素逐像素对齐，不误点 -->
+      <svg id="mapsvg" viewBox="0 0 1345 970" preserveAspectRatio="none" aria-label="Museum map">
+        <!-- 欧洲绘画馆（红屋顶）：呼吸高亮，标签文字一并可点 -->
+        <rect class="ghost" id="hot-label" role="button" tabindex="0" aria-label="European Paintings wing"
+              x="222" y="246" width="210" height="42" rx="10"/>
+        <polygon id="hot-piazza" role="button" tabindex="0" aria-label="Enter European Paintings"
+                 points="259,428 407,333 439,316 464,314 519,341 412,481 399,492 382,500 293,463 262,440"/>
+        <!-- 返回封面 -->
+        <circle class="ghost" id="hot-back" role="button" tabindex="0" aria-label="Back to cover"
+                cx="54.5" cy="57" r="27.5"/>
+        <!-- View Collection List（暂未开放，优雅提示） -->
+        <rect class="ghost" id="hot-collection" role="button" tabindex="0" aria-label="View collection list"
+              x="933" y="840" width="376" height="80" rx="40"/>
+      </svg>
+      <div id="toast"></div>
+    </div>
+  </div>
+
+  <div id="fade">ENTERING THE EUROPEAN PAINTINGS GALLERIES</div>
+
+<script>
+  const $ = (s) => document.querySelector(s);
+  const show = (id) => {
+    document.querySelectorAll('.slide').forEach(s => { s.classList.remove('active'); s.inert = true; });
+    $(id).classList.add('active'); $(id).inert = false;
+  };
+
+  // ── 优雅 toast ──
+  let toastTimer = null;
+  function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    t.style.opacity = '0';
+    t.style.transition = 'opacity .35s';
+    requestAnimationFrame(() => { t.style.opacity = '1'; });
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.style.display = 'none', 380); }, 1900);
+  }
+
+  // ── 可访问性标签 ──
+  document.getElementById('wings').inert = true;
+
+  // ── 封面：Enter → Museum Map ──
+  $('#btn-enter').addEventListener('click', () => show('#wings'));
+
+  // ── 地图：欧洲绘画馆（红屋顶 / 标签）→ 进入 3D 画廊 ──
+  let entering = false;
+  const enterGallery = () => {
+    if (entering) return;
+    entering = true;
+    $('#fade').classList.add('on');
+    setTimeout(() => { location.href = 'walktest.html'; }, 900);
+  };
+  $('#hot-piazza').addEventListener('click', enterGallery);
+  $('#hot-label').addEventListener('click', enterGallery);
+
+  // ── 地图：返回封面 / Collection List 提示 ──
+  $('#hot-back').addEventListener('click', () => show('#cover'));
+  $('#hot-collection').addEventListener('click', () => toast('Collection list — coming soon'));
+
+  // ── 键盘：Enter 进入 / Escape 返回 / 空格激活聚焦按钮 ──
+  addEventListener('keydown', (ev) => {
+    if (ev.repeat) return;
+    if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches && ev.target.matches('[role=button]')) {
+      ev.preventDefault(); ev.target.click(); return;
+    }
+    if (ev.key === 'Escape') {
+      if ($('#wings').classList.contains('active')) show('#cover');
+      return;
+    }
+    if (ev.key === 'Enter') {
+      if ($('#cover').classList.contains('active')) show('#wings');
+      else enterGallery();
+    }
+  });
+</script>
+</body>
+</html>

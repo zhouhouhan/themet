@@ -1,0 +1,46 @@
+# ── secrets / machine config ─────────────────────────────
+.env
+.env.local
+js/ai-config.js
+tools/deploy-*.sh
+
+# ── heavy site assets (not in git; full package = vgallery-offline/) ──
+assets/audio/
+assets/materials/
+assets/models/
+assets/objects/
+assets/ui/
+assets/video/
+assets/paintings/*
+!assets/paintings/met-originals/
+assets/paintings/met-originals/*
+!assets/paintings/met-originals/entrance-v6.json
+
+# ── dependencies ─────────────────────────────────────────
+node_modules/
+walkapp/node_modules/
+tools/node_modules/
+
+# ── legacy first-gen app (superseded by walkapp/walktest-entry.mjs) ──
+js/three.module.js
+js/controls/
+js/loaders/
+js/utils/
+js/walk-bundle.js
+walk.html
+voices.html
+splattest.html
+_splatprobe.html
+_splatprobe2.html
+
+# ── local working data / packages ────────────────────────
+reference/
+verify-shots/
+.playwright-mcp/
+.workbuddy/
+.codex/
+.zcode/
+vgallery-offline/
+vgallery-merge-*/
+*.zip
+.handoff-extract-*.md
