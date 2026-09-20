@@ -141,6 +141,8 @@ async function main() {
     { url: "assets/models/gallery-v6.glb", est: 53.0 },
     { url: "assets/models/characters/josh.glb", est: 11.4 },
     { url: "assets/models/objects/crown-opt.glb", est: 2.8 },
+    { url: "assets/models/scroll-gallery-v1.glb", est: 0.09 },
+    { url: "assets/models/characters/kid-head.glb?v=3", est: 5.5 },
   ];
   const progress = new Map();
   let loadedAll = false;
@@ -169,7 +171,7 @@ async function main() {
       pumpProgress();
     });
 
-  const [gallery, tourist, crownGltf] = await Promise.all(ASSETS.map(loadOne));
+  const [gallery, tourist, crownGltf, scrollGltf, headGltf] = await Promise.all(ASSETS.map(loadOne));
   loadedAll = true;
   pumpProgress();
   // v5 已是米制 / Y-up：原样入场，不旋转、不缩放、不居中
@@ -186,6 +188,7 @@ async function main() {
       if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; }   // 画廊不用阴影；阴影只在广场世界
       if (o.isMesh && o.material) {
         const mats = Array.isArray(o.material) ? o.material : [o.material];
+        if (mats.some((x) => x.name === "V6 burgundy velvet rope")) o.visible = false;   // 移除红绳
         for (const m of mats) {
           if (m.name === "V5 waxed oak parquet") { m.color.setRGB(0.52, 0.40, 0.31); m.roughnessMap = null; m.roughness = 0.22; }
           // 透射玻璃代价极高（three 每帧额外整场景渲染一遍）→ 换成廉价透明材质，视觉近似
@@ -333,8 +336,7 @@ async function main() {
   addProxy("proxy_vitrine", 1.08, 2.0, 1.08, 0, 1.0, -0.7);             // 皇冠展柜（重建后 ~0.95×1.95×0.95）
 
   // Passage views extend beyond the visitor boundary; the velvet ropes mark it.
-  for (const z of [-11.4, 11.4]) addProxy('proxy_rope_boundary_' + z, 3.1, 10, .18, 0, 5, z);
-
+  // 绒绳按需求移除：两条走廊成为通往特展厅的通道（门户触发在 frame 内）
   // Piazza San Marco 画中世界的物理：地面代理（顶面 Y=0，角色落地）+ 活动边界墙。
   // 区域 z∈[45, 64]、x∈[-8, 8]（墙体内缘留出胶囊半径余量），远离画廊碰撞体（画廊 z≤±12.2）互不干扰。
   addProxy("proxy_piazza_floor", 20, 0.6, 26, 0, -0.3, 54.5);
@@ -342,6 +344,287 @@ async function main() {
   addProxy("proxy_piazza_wall_xp", 0.4, 12, 26, 8.4, 5, 54.5);
   addProxy("proxy_piazza_wall_zn", 20, 12, 0.4, 0, 5, 44.6);
   addProxy("proxy_piazza_wall_zp", 20, 12, 0.4, 0, 5, 64.4);
+
+  // ── 千里江山图特展厅（独立 GLB，置于 +X 远端；一期仅传送进入）──
+  // 房间局部坐标：入口墙 x=0、画墙 y=+2.1、卷首靠入口（手卷从右往左读）。
+  // 装载时绕 Y 转 180° 并平移到 x∈[200,216]：画墙落到世界 +Z——沿行走方向画在右手侧、
+  // 面墙观画时卷首恰在观者右手边，读卷方向与行走方向一致；刚体变换，贴图不镜像。
+  // 世界坐标映射：world = (216 − bx, bz, +by)
+  const SCROLL = { offX: 200, active: false, spots: [], saved: null, alignYaw: null, feet: new THREE.Vector3(212.6, 0.15, -1.2) };
+  const SCROLL_BANNER = "SPECIAL EXHIBITION — A THOUSAND LI OF RIVERS AND MOUNTAINS · E INFO · DOORS BACK TO GALLERY";
+  {
+    const room = scrollGltf.scene;
+    room.rotation.y = Math.PI;
+    room.position.set(SCROLL.offX + 16, 0, 0);
+    scene.add(room);
+    room.updateMatrixWorld(true);
+    const maxAniso = renderer.capabilities.getMaxAnisotropy();
+    const mats = {};
+    room.traverse((o) => {
+      // 段落铜牌二轮才挪到栏座（规格 §2.11），先隐藏避免压在画心上
+      if (o.name && o.name.startsWith("PLAQUE")) { o.visible = false; return; }
+      if (o.isMesh) {
+        o.castShadow = o.receiveShadow = false;
+        for (const m of [].concat(o.material)) {
+          mats[m.name] = m;
+          m.side = THREE.FrontSide;                  // 白模法线已审计全部朝房间（verify 脚本 facing 审计）
+          if (m.transmission > 0) { m.transmission = 0; m.transparent = true; m.opacity = 0.18; m.roughness = 0.06; m.depthWrite = false; }
+          m.needsUpdate = true;
+        }
+      }
+    });
+    const texLoader = new THREE.TextureLoader();
+    // flipU：房间绕 Y 转 180° 后，贴图平面的 u 轴与观者左右反向（GLB UV 实测，
+    // tools/inspect-scroll-uv.mjs）——水平镜像贴图补偿；画心翻转同时修正段落接缝连续性
+    const setMap = (matName, file, rough = 0.62, flipU = true) => {
+      texLoader.load(`assets/models/scroll/slices/${file}`, (t) => {
+        t.colorSpace = THREE.SRGBColorSpace;
+        t.anisotropy = Math.min(8, maxAniso);
+        t.flipY = false;                // GLB UV 按 glTF 约定（v=0 图顶）；TextureLoader 默认 flipY 会整体倒置
+        t.needsUpdate = true;           // flipY 影响上传，需重传
+        if (flipU) {
+          t.wrapS = THREE.RepeatWrapping; t.repeat.x = -1; t.offset.x = 1;
+          t.updateMatrix();               // 房间绕 Y 转 180° 后 u 轴与观者左右反向，镜像补偿；
+        }                                 // GLTFLoader 关了 matrixAutoUpdate，必须手动烘焙 uvTransform
+        const m = mats[matName]; if (!m) return;
+        m.map = t; m.color.set(0xffffff); m.roughness = rough; m.needsUpdate = true;
+      });
+    };
+    for (let i = 1; i <= 10; i++) setMap(`scroll_slice_${String(i).padStart(2, "0")}`, `scroll_slice_${String(i).padStart(2, "0")}.jpg`);
+    setMap("scroll_colophon_01", "scroll_colophon_01.jpg", 0.8);
+    setMap("scroll_colophon_02", "scroll_colophon_02.jpg", 0.8);
+    setMap("detail_print_01", "detail_print_01.jpg", 0.62);
+    setMap("detail_print_02", "detail_print_02.jpg", 0.62);
+    setMap("TITLE_PLATE", "title_plate.jpg", 0.5);
+    setMap("CREDIT_PLATE", "credit_plate.jpg", 0.5);
+    // 顶部轨道射灯：降密为 5 盏等距（01/03/05/07/09，间距 2.4m），灯体可见
+    room.traverse((o) => {
+      if (!o.name || !o.name.startsWith("LT_")) return;
+      const sm = o.name.match(/^LT_SCROLL_(\d+)/);
+      if (sm && +sm[1] % 2 === 0) return;             // 画灯降密：隔一盏留一盏
+      const p = o.getWorldPosition(new THREE.Vector3());
+      const s = new THREE.SpotLight(0xffd9a0, 85, 10, 0.5, 0.6, 1.7);
+      s.position.copy(p);
+      if (o.name.startsWith("LT_SCROLL")) s.target.position.set(p.x, 1.45, 2.08);
+      else if (o.name === "LT_TITLE") s.target.position.set(p.x, 1.3, p.z);
+      else if (o.name === "LT_COLOPHON") s.target.position.set(p.x - 0.55, 1.45, p.z);
+      else s.target.position.set(p.x, 1.5, -2.08);   // LT_DETAIL_*
+      s.visible = false;                              // 仅特展期间点亮
+      scene.add(s, s.target);
+      SCROLL.spots.push(s);
+    });
+    room.traverse((o) => { o.matrixAutoUpdate = false; });   // 静态房间，与画廊同待遇
+    SCROLL.room = room;
+
+    // ── 材质细节：程序化凹凸去塑料感（织物墙 / 石地 / 木纹，无外部资产）──
+    const bumpTex = (draw, rep) => {
+      const c = document.createElement("canvas"); c.width = c.height = 256;
+      draw(c.getContext("2d"), 256);
+      const t = new THREE.CanvasTexture(c);
+      t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rep, rep);
+      return t;
+    };
+    const weaveDraw = (ctx, s) => {          // 织物：经纬细纹
+      ctx.fillStyle = "#808080"; ctx.fillRect(0, 0, s, s);
+      for (let i = 0; i < s; i += 4) {
+        ctx.fillStyle = "rgba(255,255,255,0.16)"; ctx.fillRect(i, 0, 2, s);
+        ctx.fillStyle = "rgba(0,0,0,0.16)"; ctx.fillRect(0, i, s, 2);
+      }
+    };
+    const stoneDraw = (ctx, s) => {          // 石板：噪点 + 分缝
+      ctx.fillStyle = "#808080"; ctx.fillRect(0, 0, s, s);
+      for (let i = 0; i < 2600; i++) {
+        const v = (128 + (Math.random() * 44 - 22)) | 0;
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
+        ctx.fillRect(Math.random() * s, Math.random() * s, 2, 2);
+      }
+      ctx.strokeStyle = "rgba(0,0,0,0.28)"; ctx.lineWidth = 2;
+      ctx.strokeRect(-2, -2, s / 2 + 4, s / 2 + 4); ctx.strokeRect(s / 2 - 2, s / 2 - 2, s / 2 + 4, s / 2 + 4);
+    };
+    const woodDraw = (ctx, s) => {           // 木纹：拉丝曲线
+      ctx.fillStyle = "#808080"; ctx.fillRect(0, 0, s, s);
+      for (let i = 0; i < 90; i++) {
+        const y = Math.random() * s;
+        const dark = Math.random() > 0.5;
+        ctx.strokeStyle = `rgba(${dark ? 0 : 255},${dark ? 0 : 255},${dark ? 0 : 255},0.10)`;
+        ctx.beginPath(); ctx.moveTo(0, y);
+        ctx.bezierCurveTo(s / 3, y + (Math.random() * 8 - 4), s * 2 / 3, y + (Math.random() * 8 - 4), s, y + (Math.random() * 6 - 3));
+        ctx.stroke();
+      }
+    };
+    const applyBump = (matName, tex, scale) => {
+      const m = mats[matName]; if (!m) return;
+      m.bumpMap = tex; m.bumpScale = scale; m.needsUpdate = true;
+    };
+    applyBump("INK_WALL", bumpTex(weaveDraw, 10), 0.012);
+    applyBump("STONE_FLOOR", bumpTex(stoneDraw, 6), 0.02);
+    applyBump("DARK_WALNUT", bumpTex(woodDraw, 2), 0.01);
+    applyBump("DARK_CEIL", bumpTex(woodDraw, 3), 0.008);
+    // 反馈轮 IV：顶棚板（y=4.0，法线朝下已验证）在压暗灯光下近乎纯黑，搁栅缝隙透出
+    // 背景色 → 观感像"没封顶、上面是空的"。双面兜底 + 木色微自发光，让顶面读得出是一个面。
+    if (mats.DARK_CEIL) {
+      mats.DARK_CEIL.side = THREE.DoubleSide;
+      mats.DARK_CEIL.emissive = new THREE.Color(0x332412);
+      mats.DARK_CEIL.emissiveIntensity = 0.55;
+      mats.DARK_CEIL.needsUpdate = true;
+    }
+
+    // ── 长凳：白模几何（已倒角）+ 大厅同款「牛津红拉扣皮」材质克隆 + 拉扣凹凸 ──
+    // 注意：大厅长凳是合并网格（Architecture_-_Oxblood_tufted_leather），不可克隆搬运
+    let leatherM = null;
+    gallery.scene.traverse((o) => {
+      if (leatherM || !o.isMesh || !o.material) return;
+      const m = [].concat(o.material)[0];
+      if (m.name === "Oxblood tufted leather") leatherM = m;
+    });
+    let benchProto = null;
+    room.traverse((o) => {
+      if (o.name !== "BENCH" || !o.isMesh) return;
+      o.visible = true;
+      if (leatherM) {
+        const lm = leatherM.clone();
+        const c = document.createElement("canvas"); c.width = c.height = 256;
+        const ctx = c.getContext("2d");
+        ctx.fillStyle = "#808080"; ctx.fillRect(0, 0, 256, 256);
+        for (let gy = 0; gy < 3; gy++) for (let gx = 0; gx < 6; gx++) {   // 拉扣凹点
+          const x = 22 + gx * 42, y = 42 + gy * 85;
+          const g = ctx.createRadialGradient(x, y, 2, x, y, 26);
+          g.addColorStop(0, "rgba(0,0,0,0.55)"); g.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, 26, 0, 7); ctx.fill();
+        }
+        const bt = new THREE.CanvasTexture(c);
+        bt.wrapS = bt.wrapT = THREE.RepeatWrapping; bt.repeat.set(2, 1);
+        lm.bumpMap = bt; lm.bumpScale = 0.03;
+        lm.needsUpdate = true;
+        o.material = lm;
+      }
+      benchProto = o;
+    });
+    // 反馈轮 VIII：两只沙发放房间中部、沿长卷方向相隔 4.8m；白模原靠墙位置收起
+    if (benchProto) {
+      const place = (b, wx, wz) => {
+        const bb = new THREE.Box3().setFromObject(b);
+        const cur = room.worldToLocal(bb.getCenter(new THREE.Vector3()));
+        const tgt = room.worldToLocal(new THREE.Vector3(wx, 0.225, wz));   // 0.225=凳体半高，贴地
+        b.position.add(tgt.sub(cur));
+        b.updateMatrix();                          // room 全员冻结矩阵，挪位必须手动刷新
+      };
+      const b1 = benchProto.clone(); room.add(b1);
+      const b2 = benchProto.clone(); room.add(b2);
+      place(b1, 205.6, -0.5);
+      place(b2, 210.4, -0.5);
+      benchProto.visible = false;
+    }
+
+    // ── 反馈轮 II：去玻璃栏 → 红地毯；可见顶灯降密（5 盏等距）；南廊恢复绒绳；尽端保持黑墙单路 ──
+    room.traverse((o) => { if (o.name === "RAIL_GLASS" || o.name === "RAIL_BRONZE_BASE") o.visible = false; });
+    {
+      // 反馈轮 IV：整间满铺红毯（短条地毯出现"半红半别色"的断裂观感）
+      const carpet = new THREE.Mesh(
+        new THREE.PlaneGeometry(16.6, 4.8),
+        new THREE.MeshStandardMaterial({ color: 0x6e1620, roughness: 0.96 })
+      );
+      carpet.rotation.x = -Math.PI / 2;
+      carpet.position.set(8, 0.012, 0);
+      carpet.matrixAutoUpdate = false; carpet.updateMatrix();
+      room.add(carpet);
+    }
+    // 南廊恢复绒绳（南向无门户，走廊保持原有视觉）
+    addProxy("proxy_scroll_south_rope", 3.1, 10, .18, 0, 5, 11.4);
+    const brassM = new THREE.MeshStandardMaterial({ color: 0xc9a227, roughness: 0.35, metalness: 0.85 });
+    const ropeM = new THREE.MeshStandardMaterial({ color: 0x8e1c26, roughness: 0.6 });
+    for (const sx of [-1.35, 1.35]) {
+      const st = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.92, 10), brassM);
+      st.position.set(sx, 0.46, 11.4);
+      scene.add(st);
+    }
+    const srope = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 2.7, 8), ropeM);
+    srope.rotation.z = Math.PI / 2;
+    srope.position.set(0, 0.82, 11.4);
+    scene.add(srope);
+    // 北廊安全地面/侧墙（门户淡出期间不坠入虚空）
+    addProxy("proxy_ncorr_floor", 3.4, 0.6, 7, 0, -0.3, -15);
+    addProxy("proxy_ncorr_side_e", 0.4, 12, 7, 1.75, 5, -15);
+    addProxy("proxy_ncorr_side_w", 0.4, 12, 7, -1.75, 5, -15);
+    // 入口门外的走廊纵深（纯视觉：红墙+石基+木地板+尽端白门，门户在门口即触发淡出）
+    {
+      const redM = new THREE.MeshStandardMaterial({ color: 0x9c2f22, roughness: 0.9 });
+      const creamM = new THREE.MeshStandardMaterial({ color: 0xd8d2c2, roughness: 0.9 });
+      const woodM = new THREE.MeshStandardMaterial({ color: 0x3a2317, roughness: 0.6 });
+      const vbox = (w, h, d, x, y, z, m) => { const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); b.position.set(x, y, z); scene.add(b); return b; };
+      vbox(10, 0.3, 3.4, 221.5, -0.15, 0, woodM);            // 地板
+      vbox(10, 4, 0.3, 221.5, 2, -1.75, redM);               // 红墙
+      vbox(10, 4, 0.3, 221.5, 2, 1.75, redM);
+      vbox(10, 0.4, 3.4, 221.5, 3.8, 0, creamM);             // 顶
+      vbox(0.2, 3.4, 3.4, 226.4, 1.7, 0, creamM);            // 尽端
+      vbox(1.8, 2.6, 0.15, 226.2, 1.3, 0, creamM);           // 尽端白门
+      const corridorLight = new THREE.PointLight(0xffe2b8, 20, 12, 2);
+      corridorLight.position.set(221, 3.2, 0);
+      scene.add(corridorLight);
+    }
+    // 顶部轨道射灯：轨道贴搁栅下（3.94），灯头 3.62 斜向画墙——正规射灯样式、光束打在画上。
+    // 高度取中：4.0 吸顶完全在行走视野外（GTA 相机固定俯视），2.78 吊灯用户嫌垂太低
+    const fixMat = new THREE.MeshStandardMaterial({ color: 0x15151a, roughness: 0.45, metalness: 0.7 });
+    const lensMat = new THREE.MeshBasicMaterial({ color: 0xffe8b8 });
+    const plateGeo = new THREE.BoxGeometry(0.16, 0.02, 0.16);            // 吸顶盘
+    const stemGeo = new THREE.CylinderGeometry(0.018, 0.018, 0.3, 8);    // 连接杆 3.93 → 3.63
+    const headGeo = new THREE.CylinderGeometry(0.085, 0.105, 0.4, 14);   // 射灯灯体
+    const lensGeo = new THREE.CircleGeometry(0.1, 18);                   // 暖光镜片
+    const railGeo = new THREE.BoxGeometry(11.0, 0.06, 0.1);              // 画墙侧共享轨道
+    const HEAD_Y = 3.62;
+    { // 画墙侧轨道（世界 z=1.45，罩住 5 盏画灯跨度）
+      const rail = new THREE.Mesh(railGeo, fixMat);
+      rail.position.set(207.6, 3.94, 1.45);
+      scene.add(rail);
+    }
+    for (const s of SCROLL.spots) {
+      s.position.y = 3.55;                        // 光源在灯体内（离墙变远，强度 85→95 补偿）
+      s.intensity = 95;
+      const plate = new THREE.Mesh(plateGeo, fixMat);
+      plate.position.set(s.position.x, 3.99, s.position.z);
+      const stem = new THREE.Mesh(stemGeo, fixMat);
+      stem.position.set(s.position.x, 3.78, s.position.z);
+      const head = new THREE.Mesh(headGeo, fixMat);
+      head.position.set(s.position.x, HEAD_Y, s.position.z);
+      head.lookAt(s.target.position);
+      head.rotateX(Math.PI / 2);                  // 灯体轴向对准目标
+      const lens = new THREE.Mesh(lensGeo, lensMat);
+      lens.position.set(s.position.x, HEAD_Y, s.position.z);
+      lens.lookAt(s.target.position);
+      lens.translateZ(0.21);                      // 镜片推到灯体前端
+      // s.position 是世界坐标：加进 room（旋转+平移的父节点）会被二次变换甩进主馆——必须挂 scene
+      scene.add(plate, stem, head, lens);
+    }
+    // 相机专用门帘：挡住跟拍相机从门洞穿到房外（不挡玩家）；加入 cameraBlockers 在其定义之后
+    SCROLL.camGate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.2, 2.6, 1.8),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    SCROLL.camGate.position.set(216.3, 1.3, 0);
+    scene.add(SCROLL.camGate);
+
+    // 影墙西侧（画廊侧）复制标题铭牌：绕行进厅后同样能看到展名
+    const plateSrc = room.getObjectByName("TITLE_PLATE_OBJ");
+    if (plateSrc) {
+      const p2 = plateSrc.clone();
+      p2.position.x = 1.94;             // 影墙西面（x=2.0 内缘外 6mm）
+      p2.rotation.y += Math.PI;         // 面朝画廊（+x_local）
+      p2.visible = true;
+      room.add(p2);
+    }
+    // 碰撞代理（世界坐标；房内 x∈[200,216]、z∈[-2.1,2.1]，入口门洞在 x=216、|z|<0.8）
+    addProxy("proxy_scroll_floor", 17, 0.6, 5.2, 208, -0.3, 0);
+    addProxy("proxy_scroll_wall_scroll", 17, 12, 0.4, 208, 5, 2.3);        // 长卷墙
+    addProxy("proxy_scroll_wall_opp", 17, 12, 0.4, 208, 5, -2.3);          // 对面墙（长凳+放大图）
+    addProxy("proxy_scroll_wall_far", 0.4, 12, 5.2, 199.8, 5, 0);          // 尽端墙（题跋转弯）
+    addProxy("proxy_scroll_entry_l", 0.4, 12, 1.5, 216.2, 5, 1.45);        // 入口墙（门洞两侧）
+    addProxy("proxy_scroll_entry_r", 0.4, 12, 1.5, 216.2, 5, -1.45);
+    addProxy("proxy_scroll_entry_top", 0.4, 2, 1.8, 216.2, 3.4, 0);        // 门楣
+    addProxy("proxy_scroll_shadowwall", 0.4, 2.6, 2.6, 213.8, 1.3, 0.55);  // 影墙
+    addProxy("proxy_scroll_rail", 12.2, 1.05, 0.15, 207, 0.52, 0.9);       // 玻璃矮栏
+    addProxy("proxy_scroll_bench", 1.8, 0.5, 0.5, 207.2, 0.25, -1.78);     // 牛皮长凳（大厅同款克隆）
+    addProxy("proxy_scroll_roller", 0.15, 0.9, 0.15, 213.05, 1.45, 2.075); // 卷首滚筒
+  }
   // One dim pool per portal preserves the sightline; deeper pools cost shader time
   // on every fragment of the whole hall (point lights are global in three.js).
   for (const sign of [-1, 1]) for (const distance of [15]) {
@@ -611,6 +894,9 @@ async function main() {
     #vid h2 { font-size:12px; color:#c9b47e; letter-spacing:.1em; margin-top:4px; font-weight:400; }
     #vid p { font-size:13px; line-height:1.65; color:#cdcdcd; margin-top:12px; max-width:760px; }
     #vid .cap, #vid .close, #vid .tag { transition: opacity .4s; }
+    /* 特展沉浸模式：无画框、满屏视频（千里江山图影片） */
+    #vid.raw .wrap { inset: 0; }
+    #vid.raw .gilt, #vid.raw .tag, #vid.raw .cap { display: none; }
     #obj { position:fixed; inset:0; z-index:50; display:none; pointer-events:none; }
     #obj .close { pointer-events:auto; }
     #obj .cap { position:absolute; left:50%; bottom:60px; transform:translateX(-50%); width:min(660px,86vw);
@@ -755,12 +1041,86 @@ async function main() {
   player.setGravity(-9800);     // -9.8 m/s²（真实重力；默认 -2400×0.001=-2.4 太飘）
   player.setJumpHeight(4650);   // 起跳初速 4.65 m/s → 约 1.1m 跳高（配 gravity -9.8）
 
+  // ── 换头：儿童人像头模（Tripo 生成，离线裁衣+减面到 30k 面，tools/build-kid-head.mjs）
+  // 替换 Ch23 默认头部——只换脖子以上，身体与骨骼动画不动。?nohead 可临时关闭对照。 ──
+  if (!new URLSearchParams(location.search).has("nohead")) {
+    let body = null, hair = null, lashes = null;
+    scene.traverse((o) => {
+      if (!o.isSkinnedMesh) return;
+      if (o.name === "Ch23_Body") body = o;
+      else if (o.name === "Ch23_Hair") hair = o;
+      else if (o.name === "Ch23_Eyelashes") lashes = o;
+    });
+    if (body && headGltf) {
+      const bones = body.skeleton.bones;
+      const headIdx = bones.findIndex((b) => /head/i.test(b.name));
+      const neckIdx = bones.findIndex((b) => /neck/i.test(b.name));
+      const sp1Idx = bones.findIndex((b) => /spine1/i.test(b.name));
+      const sp2Idx = bones.findIndex((b) => /spine2/i.test(b.name));
+      const g = body.geometry;
+      const si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
+      const p = g.attributes.position;
+      // 原头与身体是同一蒙皮网格：任一顶点主权重属 Head/Neck 骨即整片移除——
+      // 全部裁净不留肉色碎片，缺口由新头模颈环+衣领覆盖。
+      // 领口线（145 单位）以上的锁骨/颈底皮肤（Spine1/Spine2 权重）一并裁掉，消除碎片
+      const isCutVert = (vi) => {
+        let best = -1, bw = 0;
+        for (let k = 0; k < 4; k++) { const w = sw.getComponent(vi, k); if (w > bw) { bw = w; best = si.getComponent(vi, k); } }
+        if (best === headIdx || best === neckIdx) return true;
+        if ((best === sp1Idx || best === sp2Idx) && p.getY(vi) > 1.45) return true;
+        return false;
+      };
+      const idx = g.index.array;
+      const keep = [];
+      for (let t = 0; t < idx.length; t += 3) {
+        const a = idx[t], b = idx[t + 1], c = idx[t + 2];
+        if (isCutVert(a) || isCutVert(b) || isCutVert(c)) continue;
+        keep.push(a, b, c);
+      }
+      g.setIndex(keep);
+      if (hair) hair.visible = false;      // 新头模自带头发
+      if (lashes) lashes.visible = false;  // 睫毛同理
+      // 头模挂 Head 骨（骨架局部单位≈厘米；四元数为实测定向 Y 轴 -90°）
+      const headBone = bones[headIdx];
+      const kidHead = headGltf.scene;
+      kidHead.name = "kid_head";
+      kidHead.position.set(0, -7, 1);      // 上抬 1cm、前移 1cm（压短脖长）
+      kidHead.quaternion.setFromEuler(new THREE.Euler(0, -Math.PI / 2, 0));
+      kidHead.scale.setScalar(68);         // 裁切线下移含下颌后头模 0.395m，×68 ≈ 原头 25cm 比例
+      headBone.add(kidHead);
+      // 领口染色：裁切环附近的布料顶点乘深色（与西装同调、向上渐隐），消除"裁切感"
+      const kMesh = kidHead.children.find((o) => o.isMesh);
+      if (kMesh) {
+        const pa = kMesh.geometry.attributes.position;
+        const cols = new Float32Array(pa.count * 3);
+        for (let i = 0; i < pa.count; i++) {
+          const y = pa.getY(i), x = pa.getX(i);
+          // 高度：y<7.5cm 全暗（盖住围脖布料 4~7cm），7.5~10cm 渐隐到肤色
+          const hDark = 1 - Math.min(1, Math.max(0, (y - 0.075) / 0.025));
+          // 面向（+X，下巴方向）不染，避免弄脏下巴皮肤
+          const front = Math.min(1, Math.max(0, x / 0.09));
+          const dark = hDark * (1 - front);
+          cols[i * 3] = 1 - dark * 0.94;
+          cols[i * 3 + 1] = 1 - dark * 0.935;
+          cols[i * 3 + 2] = 1 - dark * 0.92;
+        }
+        kMesh.geometry.setAttribute("color", new THREE.BufferAttribute(cols, 3));
+        for (const m of [].concat(kMesh.material)) { m.vertexColors = true; m.needsUpdate = true; }
+      }
+    }
+  }
+
   for (const m of proxies) if (!m.geometry.boundsTree) m.geometry.computeBoundsTree();
   scene.updateMatrixWorld(true);
   for (const m of proxies) player.addCollider({ motion: "static", shape: { kind: "mesh", mesh: m } });
   player.input.buildKeyMap({toggleVehicle:null});
   player.onAllEvent();
   const cameraBlockers = proxies.filter((m) => !m.name.includes("floor"));
+  // 特展厅实体墙参与相机防穿墙：代理盒在门洞处有缺口，仅靠代理相机会穿墙射到房外
+  if (SCROLL.room) SCROLL.room.traverse((o) => {
+    if (o.isMesh && o.visible && /^(WALL_|SHADOW_WALL|DOORFILL)/.test(o.name)) cameraBlockers.push(o);
+  });
+  if (SCROLL.camGate) cameraBlockers.push(SCROLL.camGate);   // 门洞处的相机专用门帘
   const camRay = new THREE.Raycaster();
   const camRayDir = new THREE.Vector3();
   const camRayOrigin = new THREE.Vector3();
@@ -830,6 +1190,90 @@ async function main() {
     controls.mouseButtons.LEFT = -1;
   }
 
+  // ── 特展厅 E 主视角：信息卡 + 沿卷行走跟随相机 + TTS 语音 ──
+  const scrollInfo = {
+    title: "A Thousand Li of Rivers and Mountains",
+    artist: "Wang Ximeng", date: "Northern Song dynasty, dated 1113",
+    meta: "Ink and color on silk · 51.5 × 1191.5 cm · Collection of the Palace Museum, Beijing",
+    desc: "A twelve-meter blue-green handscroll painted by Wang Ximeng at eighteen, under Emperor Huizong's eye. Mineral azurite and malachite carry mountains, rivers and villages across the silk — the earliest surviving large-format landscape scroll in Chinese art. Walk along the rail to travel the scroll; the view follows your steps.",
+  };
+  let scrollFocusIdx = 0;
+  const sliceCenterX = (i) => 212.404 - i * 1.192;   // 第 i 段（0 起）的世界中心 x
+  function openScrollFocus() {
+    const pp = player.getPosition();
+    scrollFocusIdx = Math.max(0, Math.min(9, Math.round((212.404 - pp.x) / 1.192)));
+    savedCamPos = camera.position.clone();   // closeUI 还原跟随视角
+    uiOpen = "scrollfocus";
+    player.enableToward = false;
+    hintEl.textContent = ""; hintEl.style.display = "none";
+    worldStatus.style.display = "none";   // 卡片期间收起底部横幅，关闭时恢复
+    document.getElementById("cd-title").textContent = scrollInfo.title;
+    document.getElementById("cd-meta").textContent = scrollInfo.artist + " · " + scrollInfo.date + " — " + scrollInfo.meta;
+    document.getElementById("cd-desc").textContent = scrollInfo.desc;
+    const btns = document.getElementById("cd-btns");
+    btns.innerHTML = "";
+    // 按键模型与油画馆一致：回车 = 进入画中世界（primary ⏎），A = 语音导览
+    const eb = document.createElement("button");
+    eb.className = "primary";
+    eb.textContent = "ENTER THE PAINTING  ⏎";
+    eb.addEventListener("click", playScrollCinematic);
+    btns.appendChild(eb);
+    const ab = document.createElement("button");
+    ab.textContent = "Audio Guide  (A)";
+    ab.addEventListener("click", () => {
+      if (currentAudioId) { stopAudio(); ab.textContent = "Audio Guide  (A)"; return; }
+      ab.textContent = "■ Stop Audio  (A)";
+      playAudio("qianli", () => { ab.textContent = "Audio Guide  (A)"; }, scrollVoice);
+    });
+    btns.appendChild(ab);
+    const stats = document.getElementById("cd-stats");
+    stats.innerHTML = "";
+    for (const [k, v] of [
+      ["Dimensions", "51.5 × 1191.5 cm"],
+      ["Materials", "Ink and color on silk"],
+      ["Collection", "The Palace Museum, Beijing"],
+      ["Location", "Special Exhibition Gallery"],
+    ]) {
+      const d = document.createElement("div");
+      d.innerHTML = `<div class="k"></div><div class="v"></div>`;
+      d.querySelector(".k").textContent = k;
+      d.querySelector(".v").textContent = v;
+      stats.appendChild(d);
+    }
+    card.style.display = "block";
+    dimEl.style.display = "block";
+    updateScrollFocusCam(1, true);
+  }
+  // 进入画中：全屏沉浸影片（原声、无画框），E 退出；播完自动返回现实世界（不循环、绝不绕回吸入片头）
+  function playScrollCinematic() {
+    stopAudio();
+    const v = document.getElementById("vid-player");
+    v.loop = false;                                 // 关闭循环：ended 才会触发，播完即出
+    v.src = "assets/video/qianli-jiangshan.mp4?v=2";   // 版本参数：换片后顶掉浏览器缓存的旧片
+    v.muted = false;
+    v.currentTime = 0;
+    v.style.objectFit = "cover";
+    vidEl.classList.add("raw");
+    document.getElementById("vid-tag").textContent = "";
+    document.getElementById("vid-title").textContent = "";
+    document.getElementById("vid-sub").textContent = "";
+    document.getElementById("vid-desc").textContent = "";
+    dimEl.style.display = "none";
+    card.style.display = "none";
+    vidEl.style.display = "block";
+    uiOpen = "video";
+    v.play().catch(() => {});
+  }
+  function updateScrollFocusCam(delta, snap = false) {
+    const pp = player.getPosition();
+    scrollFocusIdx = Math.max(0, Math.min(9, Math.round((212.404 - pp.x) / 1.192)));
+    const cx = sliceCenterX(scrollFocusIdx);
+    const cz = Math.min(1.25, Math.max(0.35, pp.z + 0.55));   // 相机保持在玩家与画之间，玩家不入镜
+    const dest = new THREE.Vector3(cx, 1.62, cz);
+    camera.position.lerp(dest, snap ? 1 : Math.min(1, delta * 5));
+    camera.lookAt(cx, 1.45, 2.075);
+  }
+
   // ── 状态机 ──
   let uiOpen = null;      // null | "painting" | "video" | "object" | "focus"
   let cinemaOn = false;   // 特洛伊影片正在原画布上播放（uiOpen 保持 "focus"）
@@ -841,6 +1285,14 @@ async function main() {
     if (ev.target instanceof Element && ev.target.closest('input,textarea,[contenteditable="true"]')) return;
     if ((uiOpen || worldRoot?.visible) && ['KeyF','KeyV'].includes(ev.code)) {ev.preventDefault();ev.stopImmediatePropagation();return;}
     if (uiOpen === "world" && GAME_KEY_CODES.has(ev.code)) return;   // 画中世界：移动键直通控制器，运镜中即可行走
+    if (ev.code === "KeyA" && uiOpen === "scrollfocus") {   // A = 语音导览热键（与油画馆一致；连按不重复触发）
+      if (!ev.repeat) {
+        const ab = [...document.querySelectorAll("#cd-btns button")].find((b) => b.textContent.includes("Audio"));
+        if (ab) ab.click();
+      }
+      ev.stopPropagation(); return;
+    }
+    if (uiOpen === "scrollfocus" && GAME_KEY_CODES.has(ev.code)) return;   // 走动切换主视角：移动键直通控制器
     if (!uiOpen || !GAME_KEY_CODES.has(ev.code)) return;
     // A 键是语音导览热键：吞掉前先替用户点一次 Audio 按钮（此前被拦截器吞掉 → 语音失效）
     if (!ev.repeat && ev.code === "KeyA" && uiOpen === "focus") {
@@ -975,6 +1427,8 @@ async function main() {
       focus = null;
       uiOpen = "video";
       const v = document.getElementById("vid-player");
+      vidEl.classList.remove("raw");
+      v.loop = true;   // 油画馆视频是循环展陈（特展影片会改成 false，这里还原）
       v.src = xp.src;
       v.currentTime = 0;
       v.play().catch(() => {});
@@ -1064,6 +1518,7 @@ async function main() {
       v.pause();
       v.style.transform = "none";
       v.style.objectFit = "contain";
+      vidEl.classList.remove("raw");   // 特展无框模式还原，油画视频仍有鎏金画框
       vidEl.style.display = "none";
       clearHeldKeys();                        // 退出回原位站定，不带任何残留移动
     } else if (uiOpen === "object") {
@@ -1084,6 +1539,102 @@ async function main() {
     uiOpen = null;
     current = null;
     stopAudio();
+    if (SCROLL.active) {   // 特展：卡片/视频关闭后恢复底部横幅
+      worldStatus.textContent = SCROLL_BANNER;
+      worldStatus.style.display = "block";
+    }
+  }
+
+  // ── 特展厅进出（双向门户：北廊→前厅，南廊→尽端；地图直选 = 北入口）──
+  const titleEl = document.getElementById("title");
+  function enterScrollRoom(side = "N") {
+    if (SCROLL.active) return;
+    SCROLL.side = side;
+    SCROLL.saved = {
+      amb: ambLight.intensity, key: key.intensity, fill: fill.intensity, hemi: hemiLight.intensity,
+      bg: scene.background, envInt: scene.environmentIntensity, exposure: renderer.toneMappingExposure,
+      playerPos: player.getPosition().clone(), camPos: camera.position.clone(), tgt: controls.target.clone(),
+      camMaxDist: player.cam.maxDist,
+    };
+    SCROLL.active = true;
+    player.cam.maxDist = 2.2;               // 窄厅跟随时距离收短，避免相机穿墙挤压
+    for (const s of SCROLL.spots) s.visible = true;
+    // 暗厅：全局灯压到大厅 ~15%，只留画灯说话；只调曝光不切 tone mapping（防全场景重编译）
+    ambLight.intensity = 0.08; key.intensity = 0.05; fill.intensity = 0.03; hemiLight.intensity = 0.2;
+    renderer.toneMappingExposure = 1.12;
+    // 单一入口 = 前厅（影墙揭示构图）
+    const spawn = { p: new THREE.Vector3(215.2, 0.15, -0.35), want: -Math.PI / 2 + 0.25 };
+    const cap = player.getPlayerCapsule();
+    cap.position.copy(spawn.p);
+    cap.updateMatrixWorld(true);
+    camera.position.set(spawn.p.x - Math.sin(spawn.want) * 2.2, 2.35, spawn.p.z - Math.cos(spawn.want) * 2.2);
+    controls.target.set(spawn.p.x, 1.5, spawn.p.z);
+    camera.lookAt(controls.target);
+    SCROLL.alignYaw = { want: spawn.want, hold: 60, cool: 0 };
+    if (!keepWalkHeld()) clearHeldKeys();
+    worldStatus.textContent = SCROLL_BANNER;
+    worldStatus.style.display = "block";
+    if (!SCROLL.hudSaved) SCROLL.hudSaved = { t: titleEl.childNodes[0].nodeValue, s: titleEl.querySelector("small")?.textContent ?? "" };
+    titleEl.childNodes[0].nodeValue = "SPECIAL EXHIBITION — A THOUSAND LI OF RIVERS AND MOUNTAINS";
+    if (titleEl.querySelector("small")) titleEl.querySelector("small").textContent = "PALACE MUSEUM LOAN · VGALLERY WALK DEMO";
+    renderer.compile(scene, camera);
+  }
+  function keepWalkHeld() {
+    return player.input.fwd || player.input.bkd || player.input.lft || player.input.rgt ||
+      player.input.keyFwd || player.input.keyBkd || player.input.keyLft || player.input.keyRgt;
+  }
+  function exitScrollRoom(mode = "restore") {
+    if (!SCROLL.active) return;
+    const sv = SCROLL.saved; SCROLL.active = false;
+    SCROLL.alignYaw = null;
+    for (const s of SCROLL.spots) s.visible = false;
+    ambLight.intensity = sv.amb; key.intensity = sv.key; fill.intensity = sv.fill; hemiLight.intensity = sv.hemi;
+    scene.background = sv.bg; scene.environmentIntensity = sv.envInt;
+    renderer.toneMappingExposure = sv.exposure;
+    player.cam.maxDist = sv.camMaxDist;
+    if (titleEl && SCROLL.hudSaved) {   // 还原大厅 HUD 标题
+      titleEl.childNodes[0].nodeValue = SCROLL.hudSaved.t;
+      if (titleEl.querySelector("small")) titleEl.querySelector("small").textContent = SCROLL.hudSaved.s;
+    }
+    const cap = player.getPlayerCapsule();
+    if (mode === "N") {
+      // 走出前厅门 → 出现在北廊，朝向大厅；按住的方向键继续生效（无缝过门）
+      cap.position.set(0, 0.15, -11.55);
+      cap.updateMatrixWorld(true);
+      camera.position.set(0, 2.5, -11.55 - 3.2);
+      camera.lookAt(0, 1.4, -11.55 + 3);
+      worldStatus.style.display = "none";
+      return;
+    }
+    // restore（E/ESC）：回到传送前在大厅的位置
+    cap.position.copy(sv.playerPos);
+    cap.updateMatrixWorld(true);
+    camera.position.copy(sv.camPos);
+    controls.target.copy(sv.tgt);
+    camera.lookAt(controls.target);
+    worldStatus.style.display = "none";
+    clearHeldKeys();
+  }
+  window.__scroll = { enter: enterScrollRoom, exit: exitScrollRoom, state: SCROLL };
+
+  // ── 走廊门户：走进走廊深处淡出切图（游戏式 loading），双向对称 ──
+  function portalToRoom(side) {
+    if (SCROLL.transition || SCROLL.active) return;
+    SCROLL.transition = true;
+    worldCurtain.style.transition = "opacity .35s"; worldCurtain.style.opacity = "1";
+    setTimeout(() => {
+      enterScrollRoom(side);
+      setTimeout(() => { worldCurtain.style.opacity = "0"; SCROLL.transition = false; }, 500);
+    }, 380);
+  }
+  function portalToHall(corridor) {
+    if (SCROLL.transition || !SCROLL.active) return;
+    SCROLL.transition = true;
+    worldCurtain.style.transition = "opacity .35s"; worldCurtain.style.opacity = "1";
+    setTimeout(() => {
+      exitScrollRoom(corridor);
+      setTimeout(() => { worldCurtain.style.opacity = "0"; SCROLL.transition = false; }, 500);
+    }, 380);
   }
 
   // ── Pip AI 问答（DeepSeek；移植自 considerate-learning 的 deepseek-client） ──
@@ -1122,9 +1673,12 @@ async function main() {
     const activeBlock = active
       ? `\n\nThe visitor is currently standing in front of: ${active.data.title} by ${active.data.artist} (${active.data.date}). ${active.data.desc || ""}`
       : "";
+    const scrollBlock = SCROLL.active
+      ? "\n\nThe visitor is currently in the special-exhibition room: A Thousand Li of Rivers and Mountains, by Wang Ximeng (Northern Song dynasty, dated 1113). Ink and color on silk, 51.5 × 1191.5 cm — the world's earliest surviving large-format blue-green landscape scroll, painted when Ximeng was 18 under Emperor Huizong's personal instruction; collection of the Palace Museum, Beijing. It is shown here as a 12-meter continuous handscroll. The surrounding walls display other Chinese masterworks for context: Along the River During the Qingming Festival (Zhang Zeduan), Night-Shining White (Han Gan, in the Met's own collection), Early Spring (Guo Xi), and Dwelling in the Fuchun Mountains (Huang Gongwang)."
+      : "";
     return "You are Pip, the small glowing docent sprite of VGALLERY — a walkable 3D museum that recreates The Metropolitan Museum of Art's European Paintings galleries (an unofficial tribute; the artworks are drawn from the Met collection and arranged in an interpretive virtual setting).\n" +
       "Your job: answer the visitor's questions about the paintings, the artists, and the museum. Be warm and concise (under 120 words unless asked for more); say so plainly when you are not sure about something. Answer in the same language the visitor uses.\n" +
-      "Paintings in this hall:\n" + lines.join("\n") + activeBlock;
+      "Paintings in this hall:\n" + lines.join("\n") + activeBlock + scrollBlock;
   }
   async function pipAsk(q) {
     const c = window.DEEPSEEK_CONFIG;
@@ -1195,6 +1749,12 @@ async function main() {
     if (ev.code === "KeyE") {
       if (worldIntro) { worldIntro.t = 1; return; }   // 入场运镜中：跳过，直接接管角色
       if (!uiOpen) {
+        if (SCROLL.active) {
+          const sp = player.getPosition();
+          // 仅真迹前开卡片；馆内其余位置 E 不动作——退出只走前厅门户（防误触被传送回大厅）
+          if (sp.z > 0.1 && sp.x > 202 && sp.x < 215.5) { openScrollFocus(); return; }
+          return;
+        }
         if (worldRoot && worldRoot.visible) { closeUI(); return; }   // 画中世界漫游中：E 返回画廊
         if (highlighted) openInfo(highlighted);   // E → 锁定机位 + 信息卡
       } else {
@@ -1202,7 +1762,7 @@ async function main() {
       }
       return;
     }
-    if ((ev.code === "Enter" || ev.code === "NumpadEnter") && uiOpen === "focus") {
+    if ((ev.code === "Enter" || ev.code === "NumpadEnter") && (uiOpen === "focus" || uiOpen === "scrollfocus")) {
       const pb = document.querySelector("#cd-btns button.primary");
       if (pb) pb.click();
       return;
@@ -1217,11 +1777,26 @@ async function main() {
       toast("Render quality: " + (dprCap > 1.25 ? "HIGH" : dprCap > 0.85 ? "BALANCED" : "SMOOTH"));
       return;
     }
-    if (ev.code === "Escape" && (uiOpen || (worldRoot && worldRoot.visible))) closeUI(); // 兜底（主用 E）
+    if (ev.code === "Escape") {
+      if (SCROLL.active) { exitScrollRoom(); return; }              // 特展厅：ESC 同样返回大厅
+      if (uiOpen || (worldRoot && worldRoot.visible)) closeUI();    // 兜底（主用 E）
+    }
   });
   document.getElementById("cd-close").addEventListener("click", closeUI);
   vidEl.querySelector(".close").addEventListener("click", closeUI);
   objEl.querySelector(".close").addEventListener("click", closeUI);
+  // 特展影片终点：精准返回现实世界——提前 0.3s 触发（情愿早不能晚，晚了会看到片头回绕），
+  // ended 兜底；仅特展模式生效（raw 类在身），油画馆的循环视频不受影响
+  {
+    const sv = document.getElementById("vid-player");
+    const scrollCinemaEnd = () => {
+      if (uiOpen === "video" && vidEl.classList.contains("raw")) closeUI();
+    };
+    sv.addEventListener("timeupdate", () => {
+      if (sv.duration && sv.currentTime >= sv.duration - 0.3) scrollCinemaEnd();
+    });
+    sv.addEventListener("ended", scrollCinemaEnd);
+  }
 
   // ── 语音小精灵「Pip」：分层光球 + 环绕 + 闪星 + 声波圈 + 眼睛（程序化占位） ──
   const spriteRoot = new THREE.Group();
@@ -1230,44 +1805,101 @@ async function main() {
   const pipProj = new THREE.Vector3(), pipAbove = new THREE.Vector3();
   let pipCardRect = null;   // 信息卡屏幕区域（openInfo 时缓存），Pip 栖息位避开它
   let spriteCore, spriteInnerGlow, spriteOuterGlow, spriteEyes, spriteNameTag, spriteLight;
+  let bodyMat, spriteWisp, spriteWings = [], eyeL, eyeR, smileMouth, talkMouth, cheekL, cheekR;
+  let blinkClock = 2, blinkPhase = -1;   // 眨眼计时：blinkClock 到 0 触发，blinkPhase 走 0→1
   const spriteMotes = [], spriteSparkles = [], soundRings = [];
+  const radialTex = (inner, mid) => {
+    const c = document.createElement("canvas");
+    c.width = c.height = 128;
+    const g = c.getContext("2d");
+    const grd = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    grd.addColorStop(0, inner);
+    grd.addColorStop(0.4, mid);
+    grd.addColorStop(1, "rgba(255,200,120,0)");
+    g.fillStyle = grd;
+    g.fillRect(0, 0, 128, 128);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
   {
-    const core = new THREE.Mesh(new THREE.SphereGeometry(0.05, 20, 16),
-      new THREE.MeshBasicMaterial({ color: 0xfff8e2 }));
-    spriteCore = core;
-    spriteRoot.add(core);
+    // 身体：泪滴形灵体（Lathe 成型），自写菲涅尔着色——中心奶白、边缘暖金描边，
+    // 比"纯色小球"立体得多；uGlow 在说话时抬亮边缘光
+    bodyMat = new THREE.ShaderMaterial({
+      uniforms: { uGlow: { value: 0 } },
+      vertexShader: `
+        varying vec3 vN; varying vec3 vV; varying float vY;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vN = normalize(normalMatrix * normal);
+          vV = normalize(-mv.xyz);
+          vY = position.y;
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        uniform float uGlow;
+        varying vec3 vN; varying vec3 vV; varying float vY;
+        void main() {
+          float nd = abs(dot(normalize(vN), normalize(vV)));
+          float rim = pow(1.0 - nd, 2.2);
+          float core = pow(nd, 1.4);
+          vec3 cream = vec3(0.93, 0.86, 0.7);
+          vec3 warm = vec3(0.84, 0.6, 0.32);
+          vec3 base = mix(cream, warm, smoothstep(0.08, -0.07, vY));
+          vec3 col = base * (0.52 + 0.38 * core) + vec3(1.0, 0.74, 0.38) * (rim * (1.15 + uGlow));
+          gl_FragColor = vec4(col, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+    });
+    const bodyGeo = new THREE.LatheGeometry(
+      [
+        [0.0, -0.068], [0.023, -0.06], [0.044, -0.044], [0.058, -0.021],
+        [0.065, 0.005], [0.062, 0.031], [0.049, 0.052], [0.029, 0.065], [0.0, 0.07],
+      ].map((p) => new THREE.Vector2(p[0], p[1])),
+      28
+    );
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    spriteCore = body;
+    spriteRoot.add(body);
 
-    const radialTex = (inner, mid) => {
-      const c = document.createElement("canvas");
-      c.width = c.height = 128;
-      const g = c.getContext("2d");
-      const grd = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-      grd.addColorStop(0, inner);
-      grd.addColorStop(0.4, mid);
-      grd.addColorStop(1, "rgba(255,200,120,0)");
-      g.fillStyle = grd;
-      g.fillRect(0, 0, 128, 128);
-      const t = new THREE.CanvasTexture(c);
-      t.colorSpace = THREE.SRGBColorSpace;
-      return t;
-    };
+    // 头顶小火苗（灵体"芯"）：锥体+亮尖+光晕，待机摇曳
+    spriteWisp = new THREE.Group();
+    spriteWisp.position.set(0, 0.066, 0);
+    const wispCone = new THREE.Mesh(new THREE.ConeGeometry(0.0095, 0.02, 10),
+      new THREE.MeshBasicMaterial({ color: 0xffc46a }));
+    wispCone.position.y = 0.01;
+    spriteWisp.add(wispCone);
+    const wispTip = new THREE.Mesh(new THREE.SphereGeometry(0.005, 8, 6),
+      new THREE.MeshBasicMaterial({ color: 0xfff0c0 }));
+    wispTip.position.y = 0.021;
+    spriteWisp.add(wispTip);
+    const wispGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: radialTex("rgba(255,240,200,0.9)", "rgba(255,210,130,0.35)"),
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.8,
+    }));
+    wispGlow.scale.setScalar(0.075);
+    wispGlow.position.y = 0.02;
+    spriteWisp.add(wispGlow);
+    spriteRoot.add(spriteWisp);
+
     spriteInnerGlow = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: radialTex("rgba(255,250,225,0.95)", "rgba(255,226,150,0.45)"),
+      map: radialTex("rgba(255,244,210,0.7)", "rgba(255,220,140,0.22)"),
       blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
     }));
-    spriteInnerGlow.scale.setScalar(0.42);
+    spriteInnerGlow.scale.setScalar(0.3);
     spriteRoot.add(spriteInnerGlow);
 
     spriteOuterGlow = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: radialTex("rgba(255,236,190,0.5)", "rgba(255,206,130,0.16)"),
-      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.8,
+      map: radialTex("rgba(255,232,180,0.42)", "rgba(255,200,120,0.13)"),
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.65,
     }));
-    spriteOuterGlow.scale.setScalar(0.95);
+    spriteOuterGlow.scale.setScalar(0.85);
     spriteRoot.add(spriteOuterGlow);
 
-    // 倾斜环绕光环（9 颗大小/色调微差的灵尘）
+    // 倾斜环绕光环（9 颗大小/色调微差的灵尘，贴近身体成"电子"轨道）
     for (let i = 0; i < 9; i++) {
-      const r = 0.008 + (i % 3) * 0.004;
+      const r = 0.005 + (i % 3) * 0.0025;
       const m = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6),
         new THREE.MeshBasicMaterial({ color: i % 2 ? 0xffe9a8 : 0xffd489 }));
       spriteMotes.push(m);
@@ -1314,15 +1946,69 @@ async function main() {
       spriteRoot.add(ring);
     }
 
-    // 小眼睛（让她成为"角色"，说话时看向镜头）
+    // 整张脸（眼+腮+嘴）水平朝向镜头：大深色瞳仁 + 双高光点 = 水汪汪，
+    // 眨眼由每帧 scale.y 收缩实现；腮红与嘴型让"可爱"落地
     spriteEyes = new THREE.Group();
-    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x8a6a22 });
+    const scleraMat = new THREE.MeshBasicMaterial({ color: 0xfffdf2 });
+    const inkMat = new THREE.MeshBasicMaterial({ color: 0x40301a });
     for (const sx of [-1, 1]) {
-      const e = new THREE.Mesh(new THREE.SphereGeometry(0.011, 8, 6), eyeMat);
-      e.position.set(sx * 0.026, 0.012, 0.044);
-      spriteEyes.add(e);
+      const eye = new THREE.Group();
+      const sclera = new THREE.Mesh(new THREE.SphereGeometry(0.0145, 14, 12), scleraMat);
+      eye.add(sclera);
+      const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.0102, 12, 10), inkMat);
+      pupil.position.set(0, -0.001, 0.008);
+      eye.add(pupil);
+      const hi1 = new THREE.Mesh(new THREE.SphereGeometry(0.0048, 8, 6), scleraMat);
+      hi1.position.set(-0.0038, 0.0046, 0.0154);
+      eye.add(hi1);
+      const hi2 = new THREE.Mesh(new THREE.SphereGeometry(0.0024, 8, 6), scleraMat);
+      hi2.position.set(0.0038, -0.0042, 0.0144);
+      eye.add(hi2);
+      // 五官向中心收拢：眼距 ±0.017、略低于中线 → 周围留白多，显胖乎乎
+      eye.position.set(sx * 0.017, 0.012, 0.055);
+      spriteEyes.add(eye);
+      if (sx < 0) eyeL = eye; else eyeR = eye;
     }
+    // 腮红：粉色小球半嵌进脸颊（真 3D，各角度可见；billboard 贴片在旋转脸组下渲染异常）
+    const cheekMat = new THREE.MeshBasicMaterial({ color: 0xff9a8a, transparent: true, opacity: 0.5, depthWrite: false });
+    const cheekGeo = new THREE.SphereGeometry(0.0082, 10, 8);
+    cheekL = new THREE.Mesh(cheekGeo, cheekMat);
+    cheekR = new THREE.Mesh(cheekGeo, cheekMat);
+    cheekL.position.set(-0.034, -0.012, 0.05);
+    cheekR.position.set(0.034, -0.012, 0.05);
+    spriteEyes.add(cheekL, cheekR);
+    // 嘴：待机细微笑弧；说话切换为椭圆嘴型随音节开合
+    const mouth = new THREE.Group();
+    mouth.position.set(0, -0.013, 0.062);
+    smileMouth = new THREE.Mesh(new THREE.TorusGeometry(0.0068, 0.0009, 6, 20, Math.PI * 0.7), inkMat);
+    smileMouth.rotation.z = -Math.PI * 0.85;   // 弧口朝上 = 笑
+    mouth.add(smileMouth);
+    talkMouth = new THREE.Mesh(new THREE.CircleGeometry(0.0046, 14), inkMat);
+    talkMouth.position.z = 0.002;
+    talkMouth.visible = false;
+    mouth.add(talkMouth);
+    spriteEyes.add(mouth);
     spriteRoot.add(spriteEyes);
+
+    // 小翅膀：背后一对半透明"糖片"，双层椭圆，绕根部扑扇
+    const wingMat = new THREE.MeshBasicMaterial({
+      color: 0xfff0c8, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide,
+    });
+    for (const sx of [-1, 1]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(sx * 0.03, 0.02, -0.034);
+      const w1 = new THREE.Mesh(new THREE.SphereGeometry(0.017, 12, 8), wingMat);
+      w1.scale.set(1.55, 0.62, 0.1);
+      w1.position.set(sx * 0.026, 0.006, -0.01);
+      pivot.add(w1);
+      const w2 = new THREE.Mesh(new THREE.SphereGeometry(0.011, 10, 8), wingMat);
+      w2.scale.set(1.2, 0.75, 0.1);
+      w2.position.set(sx * 0.02, -0.01, -0.007);
+      pivot.add(w2);
+      pivot.rotation.y = sx * -0.55;   // 翅面向外后方展开
+      spriteRoot.add(pivot);
+      spriteWings.push({ pivot, sx, phase: sx > 0 ? 0.35 : 0 });
+    }
 
     // 名字标签「Pip」（说话时浮出）
     const tagCanvas = document.createElement("canvas");
@@ -1346,6 +2032,7 @@ async function main() {
     spriteRoot.add(spriteLight);
   }
   scene.add(spriteRoot);
+  window.__pip = { root: spriteRoot, face: spriteEyes, body: spriteCore };   // 调试/截图钩子
 
   // ── 点击 Pip 本体直接呼出/收起问答（自由参观与观画时均可；悬停变手型） ──
   const pipRay = new THREE.Raycaster();
@@ -1366,7 +2053,7 @@ async function main() {
   // ── 语音播放（Qwen3-TTS 固定语音包 + 3D 空间音频：声音从 Pip 的位置发出） ──
   const AUDIO_BASE = "assets/audio/Cherry/";
   const AUDIO_IDS = new Set(["harvesters", "wheat", "toledo", "aristotle", "socrates",
-    "sunflowers", "manet", "pareja", "degas-collector", "crown", "met-435844", "piazza", "met-435908"]);   // met-435844=Musicians, piazza(435882)=Piazza San Marco, met-435908=Trojan Women（语音均已生成）
+    "sunflowers", "manet", "pareja", "degas-collector", "crown", "met-435844", "piazza", "met-435908", "qianli"]);   // met-435844=Musicians, piazza(435882)=Piazza San Marco, met-435908=Trojan Women（语音均已生成）
   const INTRO = ["intro-01", "intro-02", "intro-03", "intro-04", "intro-05"];
   let speaking = false;
   let currentAudioId = null;
@@ -1378,6 +2065,7 @@ async function main() {
   positional.setRolloffFactor(1.5);
   positional.setDistanceModel("inverse");
   spriteRoot.add(positional);            // 挂在光球上 → 位置自动跟随
+  const scrollVoice = new THREE.Audio(audioListener);   // 特展语音走非空间化通道：Pip 精灵远在主馆，位置声像会衰减到无声
 
   const audioBuffers = new Map();
   let audioTicket=0;
@@ -1391,22 +2079,23 @@ async function main() {
   function stopAudio() {
     ++audioTicket;
     try { if(positional.isPlaying)positional.stop(); } catch {}
+    try { if(scrollVoice.isPlaying)scrollVoice.stop(); } catch {}
     speaking=false;currentAudioId=null;
   }
-  async function playAudio(id,onEnd) {
+  async function playAudio(id,onEnd,node = positional) {
     stopAudio();
     const ticket=audioTicket;currentAudioId=id;
     try {
       if(audioListener.context.state==="suspended")await audioListener.context.resume();
       const buf=await loadSound(id);
       if(ticket!==audioTicket)return;
-      positional.setBuffer(buf);
-      positional.onEnded=()=>{
-        positional.isPlaying=false;
+      node.setBuffer(buf);
+      node.onEnded=()=>{
+        node.isPlaying=false;
         if(ticket!==audioTicket)return;
         speaking=false;currentAudioId=null;if(onEnd)onEnd();
       };
-      positional.play();speaking=true;
+      node.play();speaking=true;
     } catch(e) {
       if(ticket!==audioTicket)return;
       speaking=false;currentAudioId=null;if(onEnd)onEnd();
@@ -1588,6 +2277,20 @@ async function main() {
 
   function updateHighlight() {
     if (uiOpen) return;
+    if (SCROLL.active) {   // 特展长廊：只有《千里江山图》真迹前给提示；其余为装饰画，
+      const sp = player.getPosition();   // 不提示、按 E 也不动作（馆内退出只走门户，防误触返回）
+      const atScroll = sp.z > 0.1 && sp.x > 202 && sp.x < 215.5;
+      hintEl.style.bottom = "112px";
+      if (atScroll) {
+        hintEl.textContent = "Press E — A Thousand Li of Rivers and Mountains";
+        hintEl.style.display = "block";
+      } else {
+        hintEl.style.display = "none"; hintEl.textContent = "";
+      }
+      highlighted = null;
+      return;
+    }
+    hintEl.style.bottom = "";   // 大厅提示回默认高度（scroll 分支以外每帧归位）
     const p = player.getPosition();
     let best = null, bestD = Infinity;
     for (const e of exhibits) {
@@ -1607,7 +2310,7 @@ async function main() {
   }
 
   // ── 调试钩子 ──
-  window.__reviewAudio=()=>({id:currentAudioId,playing:positional.isPlaying,ticket:audioTicket});
+  window.__reviewAudio=()=>({id:currentAudioId,playing:positional.isPlaying||scrollVoice.isPlaying,ticket:audioTicket});
   // QA 钩子：瞬移到某展品锁定机位 + 返回其中心的屏幕坐标（x>0 即在画面右半）
   window.__focusSnap = (id) => {
     const e = exhibits.find((x) => x.data.id === id || x.metId === id);
@@ -1658,6 +2361,24 @@ async function main() {
   const perfClock = () => performance.now();
   function frame(delta, now) {
     adaptResolution(delta);
+
+    // 走廊门户触发：大厅两端走廊深处 ↔ 特展厅（游戏式切图，无物理拼接）
+    if (!SCROLL.transition) {
+      const pp = player.getPosition();
+      if (!SCROLL.active) {
+        if (pp.z < -11.85) portalToRoom("N");
+      } else if (!uiOpen) {
+        if (pp.x > 215.85 && Math.abs(pp.z) < 0.8) portalToHall("N");       // 前厅门 → 北廊
+      }
+    }
+
+    // 特展厅 E 主视角：沿长卷行走时相机跟随最近的画段（走到哪看到哪）
+    if (uiOpen === "scrollfocus") {
+      if (!pipChat.open) player.update(delta);
+      updateScrollFocusCam(delta);
+      renderer.render(scene, camera);
+      return;
+    }
 
     if (!uiOpen && worldRoot?.visible) {
       if (!pipChat.open) player.update(delta);
@@ -1765,15 +2486,34 @@ async function main() {
         pipGoal.set(feet.x + fx * 0.35 + rx * 0.55, feet.y + 1.45 + bob, feet.z + fz * 0.35 + rz * 0.55);
       }
       spriteRoot.position.lerp(pipGoal, 1 - Math.pow(0.002, delta));   // 平滑飞往目标
+      // 呼吸挤压拉伸（squash & stretch）：待机轻呼吸，说话时随音节弹跳
+      const breathe = Math.sin(t * 2.6) * 0.035 + (speaking ? Math.abs(Math.sin(t * 11)) * 0.07 : 0);
+      spriteCore.scale.set(1 - breathe * 0.55, 1 + breathe, 1 - breathe * 0.55);
       const speakPulse = speaking ? 1 + Math.sin(t * 11) * 0.26 : 1 + Math.sin(t * 2.2) * 0.06;
-      spriteCore.scale.setScalar(speakPulse);
-      spriteInnerGlow.scale.setScalar(0.42 * (speaking ? 1.2 * speakPulse : speakPulse));
-      spriteOuterGlow.scale.setScalar(0.95 * (speaking ? 1.12 : 1 + Math.sin(t * 1.1) * 0.05));
-      spriteOuterGlow.material.opacity = speaking ? 0.95 : 0.75;
+      spriteInnerGlow.scale.setScalar(0.3 * (speaking ? 1.2 * speakPulse : speakPulse));
+      spriteOuterGlow.scale.setScalar(0.85 * (speaking ? 1.12 : 1 + Math.sin(t * 1.1) * 0.05));
+      spriteOuterGlow.material.opacity = speaking ? 0.8 : 0.6;
       spriteLight.intensity = speaking ? 3.8 : 2.1;
+      bodyMat.uniforms.uGlow.value = speaking ? 0.55 + Math.sin(t * 11) * 0.3 : 0;
+      spriteWings.forEach((w) => {
+        w.pivot.rotation.z = w.sx * (0.14 + Math.sin(t * (speaking ? 12.5 : 7.5) + w.phase) * 0.42);
+      });
+      spriteWisp.rotation.z = Math.sin(t * 3.1) * 0.16;
+      spriteWisp.rotation.x = Math.cos(t * 2.4) * 0.1;
+      // 眨眼：2.2~5s 随机触发，0.16s 闭合一循环
+      blinkClock -= delta;
+      if (blinkClock <= 0) { blinkClock = 2.2 + Math.random() * 2.8; blinkPhase = 0; }
+      if (blinkPhase >= 0) {
+        blinkPhase += delta / 0.16;
+        if (blinkPhase >= 1) blinkPhase = -1;
+      }
+      const blinkK = blinkPhase < 0 ? 1 : 0.08 + Math.abs(1 - blinkPhase * 2) * 0.92;
+      eyeL.scale.y = blinkK; eyeR.scale.y = blinkK;
+      smileMouth.visible = !speaking; talkMouth.visible = speaking;
+      if (speaking) talkMouth.scale.set(1, 0.45 + Math.abs(Math.sin(t * 10)) * 0.85, 1);
       spriteMotes.forEach((m, i) => {
         const a = t * (speaking ? 2.4 : 1.0) + (i / spriteMotes.length) * Math.PI * 2;
-        const rr = 0.17 + Math.sin(t * 1.3 + i) * 0.012;
+        const rr = 0.115 + Math.sin(t * 1.3 + i) * 0.008;
         m.position.set(Math.cos(a) * rr, Math.sin(a * 1.6 + i) * 0.05, Math.sin(a) * rr);
       });
       spriteSparkles.forEach((sp, i) => {
@@ -1802,13 +2542,28 @@ async function main() {
         r.material.opacity = r.userData.t < 1.2 ? (1 - k) * 0.55 : 0;
         r.scale.setScalar(0.25 + k * 1.05);
       });
-      // 眼睛朝向镜头（水平方向），说话时更亮更大
+      // 脸朝向镜头（水平方向），说话时整脸微放大
       spriteEyes.lookAt(camNow2.x, spriteEyes.getWorldPosition(new THREE.Vector3()).y, camNow2.z);
-      spriteEyes.scale.setScalar(speaking ? 1.15 : 1);
+      spriteEyes.scale.setScalar(speaking ? 1.06 : 1);
       // 名字标签：说话时浮出，之后淡出
       const tagTarget = speaking ? 0.95 : 0;
       spriteNameTag.material.opacity += (tagTarget - spriteNameTag.material.opacity) * Math.min(1, delta * 5);
       spriteNameTag.position.y = 0.26 + bob * 0.6;
+    }
+
+    // 特展厅传送后视角对齐：GTA 式相机每帧从相机当前位置重算 yaw，因此在 player.update
+    // 之后再旋转（setToward→orbit 改相机位置，下一帧 yaw 即保持）；dx 直乘弧度（-dx·sens）。
+    // 一次 setToward 即精确转 err，之后冷却数帧只观察；hold 到期且稳定才解除
+    if (SCROLL.active && SCROLL.alignYaw !== null) {
+      const a = SCROLL.alignYaw;
+      const f = camera.getWorldDirection(new THREE.Vector3());
+      const cur = Math.atan2(f.x, f.z);
+      let err = a.want - cur;
+      while (err > Math.PI) err -= 2 * Math.PI;
+      while (err < -Math.PI) err += 2 * Math.PI;
+      if (a.cool > 0) { a.cool--; }
+      else if (Math.abs(err) < 0.01) { if (a.hold-- <= 0) SCROLL.alignYaw = null; }
+      else { player.cam.setToward(-err / (player.cam.sensitivity || 1), 0, 1); a.cool = 4; }
     }
 
     if (uiOpen === "object") {
@@ -1847,6 +2602,13 @@ async function main() {
 
   // 手动步进钩子（调试/自动化验收用；rAF 被浏览器挂起时仍可驱动一帧）
   window.__tick = (dt = 1 / 60) => frame(dt, perfClock());
+  // 调试：运行时加载任意 GLB 到场景（模型迭代预览用）
+  window.__vgLoadGLB = async (url, x = 0, y = 1.3, z = 6) => {
+    const g = await gltfLoader.loadAsync(url);
+    g.scene.position.set(x, y, z);
+    scene.add(g.scene);
+    return g;
+  };
 
   renderer.render(scene, camera);
   // 预编译全馆材质 + 皇冠 360 场景：藏在加载遮罩后面，消除开馆后走动/首次互动的编译 hitch
@@ -1855,6 +2617,9 @@ async function main() {
       scene.traverse(o => { if (o.isSkinnedMesh) for (const m of [].concat(o.material)) m.needsUpdate = true; });
   renderer.compile(objScene, objCamera);
   loading.classList.add("done");
+
+  // 地图直选特展厅（index.html "Special Exhibition" → walktest.html?wing=scroll）
+  if (new URLSearchParams(location.search).get("wing") === "scroll") enterScrollRoom();
 
   (function animate() {
     requestAnimationFrame(animate);

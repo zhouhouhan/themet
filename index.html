@@ -49,6 +49,13 @@
     50%     { fill:rgba(240,212,150,.32); stroke-opacity:1;
       filter:drop-shadow(0 0 12px rgba(240,210,146,.65)); }
   }
+  /* ── 特展厅：玺印徽标呼吸 + 悬停提亮 ── */
+  #hot-special { cursor:pointer; }
+  #hot-special rect { transition:fill .35s, stroke .35s; }
+  #hot-special:hover rect { fill:rgba(44,35,20,.88); stroke:rgba(242,208,142,.95); }
+  #hot-special text { pointer-events:none; }
+  @keyframes specdot { 0%,100% { opacity:.55; } 50% { opacity:1; } }
+  #spec-dot { animation:specdot 2.8s ease-in-out infinite; }
   .ghost { fill:transparent; stroke:rgba(242,208,142,0); stroke-width:1.5; cursor:pointer;
     transition:fill .3s, stroke .3s; }
   .ghost:hover { fill:rgba(246,239,226,.10); stroke:rgba(242,208,142,.9); }
@@ -104,6 +111,12 @@
         <!-- View Collection List（暂未开放，优雅提示） -->
         <rect class="ghost" id="hot-collection" role="button" tabindex="0" aria-label="View collection list"
               x="933" y="840" width="376" height="80" rx="40"/>
+        <!-- Special Exhibition：千里江山图特展（金印徽标 + 呼吸） -->
+        <g id="hot-special" role="button" tabindex="0" aria-label="Special exhibition — A Thousand Li of Rivers and Mountains">
+          <rect x="188" y="640" width="318" height="52" rx="26" fill="rgba(18,15,12,.72)" stroke="rgba(242,208,142,.35)" stroke-width="1.5"/>
+          <circle id="spec-dot" cx="220" cy="666" r="10" fill="#e8c887"/>
+          <text x="246" y="674" font-family="Georgia, 'Times New Roman', serif" font-size="20" letter-spacing="1.8" fill="#ecd9ac">SPECIAL EXHIBITION</text>
+        </g>
       </svg>
       <div id="toast"></div>
     </div>
@@ -139,14 +152,15 @@
 
   // ── 地图：欧洲绘画馆（红屋顶 / 标签）→ 进入 3D 画廊 ──
   let entering = false;
-  const enterGallery = () => {
+  const enterGallery = (target = 'walktest.html') => {
     if (entering) return;
     entering = true;
     $('#fade').classList.add('on');
-    setTimeout(() => { location.href = 'walktest.html'; }, 900);
+    setTimeout(() => { location.href = target; }, 900);
   };
-  $('#hot-piazza').addEventListener('click', enterGallery);
-  $('#hot-label').addEventListener('click', enterGallery);
+  $('#hot-piazza').addEventListener('click', () => enterGallery());
+  $('#hot-label').addEventListener('click', () => enterGallery());
+  $('#hot-special').addEventListener('click', () => enterGallery('walktest.html?wing=scroll'));
 
   // ── 地图：返回封面 / Collection List 提示 ──
   $('#hot-back').addEventListener('click', () => show('#cover'));
