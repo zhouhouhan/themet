@@ -1091,6 +1091,7 @@ async function main() {
       // 领口染色：裁切环附近的布料顶点乘深色（与西装同调、向上渐隐），消除"裁切感"
       const kMesh = kidHead.children.find((o) => o.isMesh);
       if (kMesh) {
+        kMesh.name = "kid_head";   // 与 group 同名：world 入场材质刷新按此名选择（勿依赖 GLB 命名巧合）
         const pa = kMesh.geometry.attributes.position;
         const cols = new Float32Array(pa.count * 3);
         for (let i = 0; i < pa.count; i++) {
