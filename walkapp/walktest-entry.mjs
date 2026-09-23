@@ -2229,7 +2229,13 @@ async function main() {
       // 预编译世界材质：状态遮罩还在时完成编译，消除进入后首次渲染的 hitch
       renderer.compile(scene, camera);
       // Refresh the skinned material uniforms after compile; stale shadow samplers caused GL_INVALID_OPERATION when the avatar entered view.
-      scene.traverse(o => { if (o.isSkinnedMesh) for (const m of [].concat(o.material)) m.needsUpdate = true; });
+      // 换头模型（普通 Mesh，非蒙皮）同受 stale shadow sampler 影响：只刷 SkinnedMesh 会漏掉它，
+      // 表现为场景里角色无头（该 draw 被驱动器以 sampler 类型不匹配为由丢弃），需一并强制重编译。
+      scene.traverse(o => {
+        if (!o.isMesh) return;
+        if (!o.isSkinnedMesh && o.name !== "kid_head") return;
+        for (const m of [].concat(o.material)) m.needsUpdate = true;
+      });
       // 入场运镜：原画高位构图 → 角色身后标准第三人称
       const lensFov = Math.max(42, (2 * Math.atan(18 / (31 * camera.aspect)) * 180) / Math.PI);   // 31mm 镜头 / 36mm 画幅
       camera.fov = lensFov;
@@ -2617,8 +2623,14 @@ async function main() {
   renderer.render(scene, camera);
   // 预编译全馆材质 + 皇冠 360 场景：藏在加载遮罩后面，消除开馆后走动/首次互动的编译 hitch
   renderer.compile(scene, camera);
-      // Refresh the skinned material uniforms after compile; stale shadow samplers caused GL_INVALID_OPERATION when the avatar entered view.
-      scene.traverse(o => { if (o.isSkinnedMesh) for (const m of [].concat(o.material)) m.needsUpdate = true; });
+  // Refresh the skinned material uniforms after compile; stale shadow samplers caused GL_INVALID_OPERATION when the avatar entered view.
+  // 换头模型（普通 Mesh，非蒙皮）同受 stale shadow sampler 影响：只刷 SkinnedMesh 会漏掉它，
+  // 表现为场景里角色无头（该 draw 被驱动器以 sampler 类型不匹配为由丢弃），需一并强制重编译。
+  scene.traverse(o => {
+    if (!o.isMesh) return;
+    if (!o.isSkinnedMesh && o.name !== "kid_head") return;
+    for (const m of [].concat(o.material)) m.needsUpdate = true;
+  });
   renderer.compile(objScene, objCamera);
   loading.classList.add("done");
 

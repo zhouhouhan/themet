@@ -454,3 +454,11 @@ esbuild 已重建 bundle（948.8kb）。Chromium 实测全部通过：进入/取
 ## 2026-09-23 · 导航主页上架 + 线上 vgallery 全量同步 + 特洛伊语音别名修复（zcode）
 
 ①导航页：`hanson/considerate-learning/deploy-index.html` 加 VGALLERY 卡片（网格首位，馆藏柱图标，tag 3D · WebGL，GitHub=zhouhouhan/themet，onclick='vgallery/'），SSH stdin+md5 部署到 /hanson/index.html（部署前 md5 对比线上无分歧，遵守"服务器为真理源"）。②线上 vgallery 自 0916 后首次同步：tools/deploy-0923.sh（md5 批量对比增量推送）推 67 文件（特展厅 GLB/切片×17/新头模/89s 影片 48.6MB/qianli 语音/scroll48 bundle 等），第二轮 skipped=67 ALL_OK 确认全同步。**部署脚本坑：多行 $FILES 嵌进远端 ssh 命令会被远端 bash 把换行当 for 列表终止符（"syntax error near walktest.html"）——嵌入前必须 tr '\n' ' ' 拍平；本地循环无此问题（IFS 分词），只坑"展开进远端源码"的场景。**③别名修复：展品 435908(特洛伊妇女) data.id='met-435908'，A 键取 met-435908.wav 必 404 静默失败（该语音当年以 trojan 为 id 生成：script.json/trojan.wav 俱在）——加 AUDIO_ALIAS={'met-435908':'trojan'} playAudio 入口改写，bundle ?v=scroll48。④离线包重打 vgallery-offline-20260923.zip（167MB，scroll48），作废 0920 版。线上验证：卡片/scroll48/别名串/6 关键资源全 200。
+
+## 2026-09-23 · 修复：圣马可广场世界角色无头（zcode）
+
+用户报告：进入 Piazza San Marco 画中世界后人物没有头。排查：广场游客（addPiazzaFigures 程序化小人）头部完好，**无头的是玩家本人**——kid_head 对象位置/可见链全正常但 draw 被 GPU 丢弃，伴随每帧 2 条 `GL_INVALID_OPERATION: glDrawElements: Mismatch between texture format and sampler type`。
+
+根因：world 入场预编译后有一段 0916 时代的材质刷新（注释原文 "stale shadow samplers caused GL_INVALID_OPERATION..."），**只遍历 isSkinnedMesh**；换头模型 kid_head 是普通 Mesh（scroll34 才引入），不在此列——它的着色器程序在广场光态（平行光阴影）首次绑定 sampler 错乱，绘制即失败。实验闭环：干净加载进世界=无头 → 仅 `material.needsUpdate=true`（强制重编译）→ 头恢复；换无贴图材质也能渲染（贴图/蒙皮/变换全无辜）。
+
+修复：两处 compile 后的刷新（广场 world 入场 + 开馆预编译）从"只刷 SkinnedMesh"扩展为"SkinnedMesh 或 name==='kid_head'"。bundle ?v=scroll49。验证：干净加载进广场有头 ✓；退出回主馆头部正常 ✓；补推后线上 ALL_OK、walktest=scroll49 ✓。注：广场里玩家蒙皮材质的 shadow-pass GL 报错仍在（0916 已知、外观无影响），与本次无头不是同一 draw。离线包 vgallery-offline-20260923.zip 已重打（scroll49）。
