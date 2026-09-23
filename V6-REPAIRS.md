@@ -450,3 +450,7 @@ esbuild 已重建 bundle（948.8kb）。Chromium 实测全部通过：进入/取
 用户再反馈：身体加大、留白更多、五官向中心收拢显胖乎乎。执行：Lathe 剖面 ×1.3（半径 0.05→0.065、高 0.106→0.138），眼距 ±0.0225→±0.017、眼位降至中线略下，腮红/嘴同步内收，火苗上移 0.05→0.066，翅膀枢轴外移避开变大的身体。
 
 **验证**：正面（verify-shots/pip-chubby.png）胖乎乎大圆脸、眼嘴聚中、腮红微笑 ✓；侧面（pip-chubby-side.png）泪滴轮廓、翅膀、火苗 ✓；嘴型状态 smileVis:true/talkVis:false（说话时嘴型才切换，属设计行为）。bundle ?v=scroll47。调试钩子：window.__pip={root,face,body}。
+
+## 2026-09-23 · 导航主页上架 + 线上 vgallery 全量同步 + 特洛伊语音别名修复（zcode）
+
+①导航页：`hanson/considerate-learning/deploy-index.html` 加 VGALLERY 卡片（网格首位，馆藏柱图标，tag 3D · WebGL，GitHub=zhouhouhan/themet，onclick='vgallery/'），SSH stdin+md5 部署到 /hanson/index.html（部署前 md5 对比线上无分歧，遵守"服务器为真理源"）。②线上 vgallery 自 0916 后首次同步：tools/deploy-0923.sh（md5 批量对比增量推送）推 67 文件（特展厅 GLB/切片×17/新头模/89s 影片 48.6MB/qianli 语音/scroll48 bundle 等），第二轮 skipped=67 ALL_OK 确认全同步。**部署脚本坑：多行 $FILES 嵌进远端 ssh 命令会被远端 bash 把换行当 for 列表终止符（"syntax error near walktest.html"）——嵌入前必须 tr '\n' ' ' 拍平；本地循环无此问题（IFS 分词），只坑"展开进远端源码"的场景。**③别名修复：展品 435908(特洛伊妇女) data.id='met-435908'，A 键取 met-435908.wav 必 404 静默失败（该语音当年以 trojan 为 id 生成：script.json/trojan.wav 俱在）——加 AUDIO_ALIAS={'met-435908':'trojan'} playAudio 入口改写，bundle ?v=scroll48。④离线包重打 vgallery-offline-20260923.zip（167MB，scroll48），作废 0920 版。线上验证：卡片/scroll48/别名串/6 关键资源全 200。

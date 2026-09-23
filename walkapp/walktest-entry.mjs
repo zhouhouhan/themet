@@ -2054,6 +2054,9 @@ async function main() {
   const AUDIO_BASE = "assets/audio/Cherry/";
   const AUDIO_IDS = new Set(["harvesters", "wheat", "toledo", "aristotle", "socrates",
     "sunflowers", "manet", "pareja", "degas-collector", "crown", "met-435844", "piazza", "met-435908", "qianli"]);   // met-435844=Musicians, piazza(435882)=Piazza San Marco, met-435908=Trojan Women（语音均已生成）
+  // 展品 id 与语音文件 id 的历史错位：435908 的语音当年以 trojan 为 id 生成（script.json/trojan.wav），
+  // 直接用 met-435908 取文件会 404 静默失败 → 播放前按此表改写
+  const AUDIO_ALIAS = { "met-435908": "trojan" };
   const INTRO = ["intro-01", "intro-02", "intro-03", "intro-04", "intro-05"];
   let speaking = false;
   let currentAudioId = null;
@@ -2083,6 +2086,7 @@ async function main() {
     speaking=false;currentAudioId=null;
   }
   async function playAudio(id,onEnd,node = positional) {
+    id = AUDIO_ALIAS[id] || id;
     stopAudio();
     const ticket=audioTicket;currentAudioId=id;
     try {
